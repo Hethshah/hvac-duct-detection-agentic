@@ -1,0 +1,43 @@
+# Virtual environment
+.venv/
+
+# Pipeline outputs
+outputs/
+hvac-duct-detection/outputs/
+
+# Run registry (contains absolute paths specific to each machine)
+hvac-duct-detection/runs/registry.csv
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Environment & secrets
+.env
+.env.local
+
+# IDE / editor
+.DS_Store
+.claude/
+
+# Test directories
+hvac-duct-detection/tests/
+
+# Binary / media assets
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.docx
+
+# Project-specific docs & reference files
+AGENTS.md
+dev.md
+HVAC_Concept_Primer.docx
+HVAC_Duct_Detection_Architecture.docx
+sample output/
