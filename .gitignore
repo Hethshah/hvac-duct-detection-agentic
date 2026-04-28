@@ -38,6 +38,7 @@ hvac-duct-detection/tests/
 # Project-specific docs & reference files
 AGENTS.md
 dev.md
+DEPLOYMENT.md
 HVAC_Concept_Primer.docx
 HVAC_Duct_Detection_Architecture.docx
 sample output/
