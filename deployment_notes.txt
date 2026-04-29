@@ -1,0 +1,19 @@
+Current Scenario:
+
+Loacal Run + Anthropic Key
+cost per run is $0.9
+
+
+
+Small-Scale Cloud Deployement:  15-20 runs per day/500 runs per Month
+
+Lambda as dispatcher, ECS fargate for Pipeline 
+cost per run is ~$0.7
+
+
+
+Large Scale Cloud Deployment: 500-1000 runs per day
+
+AWS step functions for sub-agents and Bedrock Agentcore to run agent as managed agent service
+cost per run is ~$0.6
+
