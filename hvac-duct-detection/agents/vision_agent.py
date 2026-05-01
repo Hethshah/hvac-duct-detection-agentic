@@ -36,6 +36,7 @@ def run_vision(state: dict) -> dict:
             from tools.vision_tools import (
                 VISION_MAX_PX,
                 _deduplicate_segments,
+                _normalize_type,
                 _offset_polygon,
                 _resize_for_vision,
                 _save_temp_png,
@@ -62,12 +63,17 @@ def run_vision(state: dict) -> dict:
                 finally:
                     Path(tmp_path).unlink(missing_ok=True)
                 for seg in segs:
-                    if isinstance(seg.get("polygon"), list) and len(seg["polygon"]) >= 3:
-                        seg["polygon"] = _offset_polygon(seg["polygon"], ox, oy, inv_scale)
-                        seg["id"] = f"seg_retry_{seg_counter:03d}"
-                        seg["page"] = page_idx
-                        retry_segs.append(seg)
-                        seg_counter += 1
+                    if not (isinstance(seg.get("polygon"), list) and len(seg["polygon"]) >= 3):
+                        continue
+                    seg_type = _normalize_type(seg.get("type"))
+                    if seg_type is None:
+                        continue
+                    seg["type"] = seg_type
+                    seg["polygon"] = _offset_polygon(seg["polygon"], ox, oy, inv_scale)
+                    seg["id"] = f"seg_retry_{seg_counter:03d}"
+                    seg["page"] = page_idx
+                    retry_segs.append(seg)
+                    seg_counter += 1
             page_segments = _deduplicate_segments(retry_segs)
         else:
             raw = segment_detector(image_path, page_blocks_json)
@@ -89,7 +95,7 @@ def run_vision(state: dict) -> dict:
                         seg["confidence"] = max(best.get("confidence", 0.0), seg["confidence"])
                         seg["nearby_labels"] = best.get("nearby_labels", seg.get("nearby_labels", []))
                 except Exception as e:
-                    logger.warning("focused_retry_failed", seg_id=seg["id"], error=str(e))
+                    logger.warning("focused_retry_failed", seg_id=seg.get("id", "unknown"), error=str(e))
             refined.append(seg)
 
         # Set page index on all segments

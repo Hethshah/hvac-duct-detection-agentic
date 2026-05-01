@@ -16,7 +16,7 @@ For each duct segment detected, record:
 - "id": unique string like "seg_001", "seg_002" (continue numbering across all segments)
 - "type": "supply", "return", or "exhaust"
 - "polygon": bounding polygon in THIS IMAGE's pixel coordinates, clockwise from top-left, e.g. [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
-- "nearby_labels": list of any dimension strings (e.g. "24x12", "18\"x10\"") or CFM values (e.g. "800 CFM") within ~80 pixels of the duct boundary
+- "nearby_labels": list of text strings within ~80 pixels of the duct boundary. Include dimensions (e.g. "24x12", "10\"Ø") AND airflow values (e.g. "800 CFM", "F 150", "EA 300", or bare numbers like "700" near a diffuser). Copy text exactly as written.
 - "confidence": float 0.0-1.0 reflecting detection certainty
 
 Rules:
@@ -41,6 +41,7 @@ Re-examine the image carefully with this feedback in mind. Focus particularly on
 - Segments that were missed or misclassified as described above
 - Duct runs near the edges of the image that may have been cut off
 - Ducts with non-standard colors or lighter fills
+- For nearby_labels: capture dimensions AND airflow values (CFM, zone codes like "F 150", bare numbers near diffusers) within ~80 pixels of each duct
 
 Same classification rules apply:
 - "supply": blue or light-blue filled rectangles
@@ -48,7 +49,7 @@ Same classification rules apply:
 - "exhaust": orange or orange-hatched rectangles
 
 Respond with ONLY a valid JSON array of all detected duct segments (including any previously correct ones plus new ones found):
-[{"id":"seg_001","type":"supply","polygon":[[x1,y1],[x2,y2],[x3,y3],[x4,y4]],"nearby_labels":[],"confidence":0.88},...]
+[{{"id":"seg_001","type":"supply","polygon":[[x1,y1],[x2,y2],[x3,y3],[x4,y4]],"nearby_labels":[],"confidence":0.88}},...]
 
 If no duct segments are visible, respond with exactly: []
 """

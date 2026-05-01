@@ -6,6 +6,16 @@ const DUCT_COLORS = {
   return:  '#C62828',
   exhaust: '#E65100',
 };
+
+// Normalize vision model type strings like "supply_duct" → "supply"
+function normalizeType(raw) {
+  if (!raw) return 'unknown';
+  const t = raw.toLowerCase().replace(/[_\s-]/g, '');
+  if (t.includes('supply'))  return 'supply';
+  if (t.includes('return'))  return 'return';
+  if (t.includes('exhaust')) return 'exhaust';
+  return raw;
+}
 const PRESSURE_COLORS = {
   Low:    '#15803D',
   Medium: '#C2410C',
@@ -119,6 +129,7 @@ function pollStatus() {
       } else if (data.status === 'error') {
         clearInterval(pollTimer);
         clearInterval(stepTimer);
+        if (data.traceback) console.error('Pipeline traceback:\n', data.traceback);
         showError(data.error || 'Pipeline failed');
       }
     } catch (_) { /* network hiccup — keep polling */ }
@@ -156,7 +167,7 @@ function buildOverlay(imgW, imgH, segments) {
   segments.forEach(seg => {
     if (!seg.polygon || seg.polygon.length < 3) return;
 
-    const color  = DUCT_COLORS[seg.type] || '#888888';
+    const color  = DUCT_COLORS[normalizeType(seg.type)] || '#888888';
     const points = seg.polygon.map(p => `${p[0]},${p[1]}`).join(' ');
 
     const poly = document.createElementNS(ns, 'polygon');
@@ -177,13 +188,12 @@ function buildOverlay(imgW, imgH, segments) {
 // ── Popup ─────────────────────────────────────────────────────────────────
 function showPopup(seg, event) {
   const popup    = document.getElementById('duct-popup');
-  const color    = DUCT_COLORS[seg.type]         || '#888888';
+  const type     = normalizeType(seg.type);
+  const color    = DUCT_COLORS[type]             || '#888888';
   const pClass   = seg.pressure_class            || 'Low';
   const pColor   = PRESSURE_COLORS[pClass]       || '#15803D';
   const dimText  = formatDimension(seg);
-  const typeText = seg.type
-    ? seg.type.charAt(0).toUpperCase() + seg.type.slice(1)
-    : 'Unknown';
+  const typeText = type.charAt(0).toUpperCase() + type.slice(1);
 
   popup.innerHTML = `
     <div class="popup-header" style="background:${color}">
@@ -193,17 +203,23 @@ function showPopup(seg, event) {
     <div class="popup-body">
       <div class="popup-row">
         <span class="popup-label">Dimension</span>
-        <span class="popup-value">${dimText}</span>
+        <span class="popup-value">${dimText || '—'}</span>
       </div>
       <div class="popup-row">
         <span class="popup-label">Pressure Class</span>
         <span class="pressure-badge-inline" style="background:${pColor}">${pClass} Pressure</span>
       </div>
-      ${seg.cfm ? `
+      ${seg.pressure_reason ? `
+      <div class="popup-row popup-reason">
+        <span class="popup-value reason-text">${seg.pressure_reason}</span>
+      </div>` : ''}
       <div class="popup-row">
         <span class="popup-label">Airflow</span>
-        <span class="popup-value">${seg.cfm} CFM</span>
-      </div>` : ''}
+        ${seg.cfm
+          ? `<span class="popup-value">${seg.cfm} CFM</span>`
+          : `<span class="reason-text" style="font-size:11px;font-style:italic;color:var(--muted)">No CFM callout found near this segment</span>`
+        }
+      </div>
       ${seg.length_ft ? `
       <div class="popup-row">
         <span class="popup-label">Length</span>

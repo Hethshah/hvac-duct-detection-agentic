@@ -120,6 +120,20 @@ def _offset_polygon(polygon: list[list[float]], ox: int, oy: int, inv_scale: flo
     return [[p[0] * inv_scale + ox, p[1] * inv_scale + oy] for p in polygon]
 
 
+def _normalize_type(raw: str | None) -> str | None:
+    """Map LLM type strings to one of supply / return / exhaust, or None to drop."""
+    if not raw:
+        return None
+    t = raw.lower().replace("_", "").replace("-", "").replace(" ", "")
+    if "supply" in t:
+        return "supply"
+    if "return" in t:
+        return "return"
+    if "exhaust" in t:
+        return "exhaust"
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
@@ -191,6 +205,11 @@ def segment_detector(image_path: str, page_text_blocks_json: str) -> str:
         for seg in segs:
             if not isinstance(seg.get("polygon"), list) or len(seg["polygon"]) < 3:
                 continue
+            seg_type = _normalize_type(seg.get("type"))
+            if seg_type is None:
+                logger.debug("segment_type_filtered", raw_type=seg.get("type"))
+                continue
+            seg["type"] = seg_type
             seg["polygon"] = _offset_polygon(seg["polygon"], ox, oy, inv_scale)
             seg["id"] = f"seg_{seg_counter:03d}"
             seg["page"] = 0

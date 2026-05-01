@@ -239,6 +239,8 @@ header {
   letter-spacing: .7px; color: var(--muted);
 }
 .popup-value { font-size: 18px; font-weight: 700; color: var(--text); }
+.popup-reason { margin-top: -4px; }
+.reason-text { font-size: 11px !important; font-weight: 400 !important; color: var(--muted) !important; font-style: italic; }
 
 /* ── Pressure badges ─────────────────────────────────────────────────────── */
 .pressure-badge {

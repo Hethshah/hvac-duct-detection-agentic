@@ -37,7 +37,7 @@ def run_measurement(state: dict) -> dict:
             scale_ratio,
         )
         record = json.loads(record_json)
-        record["pressure_class"] = classify_pressure(seg, record)
+        record["pressure_class"], record["pressure_reason"] = classify_pressure(seg, record)
         measurements.append(record)
 
         if record["unmatched"]:

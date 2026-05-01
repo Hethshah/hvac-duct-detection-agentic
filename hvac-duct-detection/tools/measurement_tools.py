@@ -22,14 +22,17 @@ _RECT_PATTERN = re.compile(
     r'(\d+\.?\d*)\s*["“”]?\s*[xX×]\s*(\d+\.?\d*)',
 )
 
-# Standard CFM: "800 CFM", "1,200 cfm"
-_CFM_PATTERN = re.compile(r'(\d[\d,]*)\s*CFM', re.IGNORECASE)
+# Standard CFM: "800 CFM", "1,200 cfm", "800cfm", "800 C.F.M."
+_CFM_PATTERN = re.compile(r'(\d[\d,]*)\s*(?:CFM|C\.F\.M\.)', re.IGNORECASE)
 
-# Zone+flow labels like "F 150", "A 700" (letter code + number = airflow)
-_ZONE_FLOW_PATTERN = re.compile(r'^[A-Z]\s+(\d+)$')
+# Diffuser/grille flow tags: "F 150", "A 700", "SA-150", "EA 300"
+_ZONE_FLOW_PATTERN = re.compile(r'^[A-Z]{1,2}[-\s]+(\d{2,4})$')
+
+# Bare airflow numbers next to equipment tags: "(150)", "=150", "~150"
+_BARE_FLOW_PATTERN = re.compile(r'^[=(~]?\s*(\d{2,4})\s*[)=]?$')
 
 # Proximity threshold: max pixel distance from label center to segment bbox boundary
-_PROXIMITY_MAX_PX = 500
+_PROXIMITY_MAX_PX = 700
 
 
 # ---------------------------------------------------------------------------
@@ -52,9 +55,15 @@ def _parse_cfm(text: str) -> int | None:
     m = _CFM_PATTERN.search(text)
     if m:
         return int(m.group(1).replace(",", ""))
-    m2 = _ZONE_FLOW_PATTERN.match(text.strip())
+    t = text.strip()
+    m2 = _ZONE_FLOW_PATTERN.match(t)
     if m2:
         return int(m2.group(1))
+    m3 = _BARE_FLOW_PATTERN.match(t)
+    if m3:
+        val = int(m3.group(1))
+        if 50 <= val <= 9999:  # sanity range: realistic CFM values only
+            return val
     return None
 
 
