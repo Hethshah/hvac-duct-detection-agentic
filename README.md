@@ -13,11 +13,13 @@ PDF → Ingestion → Vision → Measurement → Annotation → Review
 
 The pipeline runs five specialized agents in sequence. If the quality score from the Review agent falls below the confidence threshold, it automatically retries the Vision → Measurement → Annotation → Review cycle with targeted feedback — up to `--max-retries` times.
 
+You can run the pipeline from the **CLI** or through the **web UI** — both produce the same annotated PDF and structured data outputs.
+
 | Agent | Model | Role |
 |---|---|---|
 | Ingestion | claude-haiku-4-5 | Renders PDF pages to 300 DPI images, extracts text blocks with coordinates, detects the drawing scale |
 | Vision | claude-opus-4-7 | Splits each page into quadrants, detects duct segments with bounding polygons, deduplicates overlaps |
-| Measurement | claude-sonnet-4-6 | Matches each detected segment to its dimension label (e.g. `12"Ø`) and CFM callout from the drawing text |
+| Measurement | claude-sonnet-4-6 | Matches each detected segment to its dimension label (e.g. `12"Ø`), CFM callout, and pressure class |
 | Annotation | pure Python | Draws colored overlays on the page images and exports an annotated PDF |
 | Review | claude-sonnet-4-6 | Scores output quality (0–1) and generates targeted feedback for failed attempts |
 
@@ -66,7 +68,27 @@ All other settings are optional — the defaults shown in `.env.example` work ou
 
 ---
 
-## Running the Pipeline
+## Running the Web UI
+
+The easiest way to use the tool is through the browser-based interface. Start the server from the `hvac-duct-detection/` directory:
+
+```bash
+cd hvac-duct-detection
+uvicorn app:app --host 0.0.0.0 --port 8000
+```
+
+Then open [http://localhost:8000](http://localhost:8000) in your browser.
+
+**What the web UI does:**
+1. Upload a PDF mechanical floor plan via drag-and-drop or file picker
+2. The pipeline runs in the background — a progress indicator shows while processing
+3. Results appear as a side-by-side view: annotated image on the left, measurement table on the right
+4. **Click any highlighted duct region** on the image to see a popup with its dimensions, CFM, and pressure class
+5. The full measurement table shows all segments with color-coded pressure class badges (Low / Medium / High)
+
+---
+
+## Running the Pipeline (CLI)
 
 All commands are run from the **repository root** with the virtual environment active.
 
@@ -175,6 +197,18 @@ Duct overlays are color-coded by type so supply, return, and exhaust paths are i
 | Return | Red | `#C62828` |
 | Exhaust | Orange | `#E65100` |
 
+### Pressure Class Badges (Web UI)
+
+In the web UI, each segment row also shows a pressure class badge based on SMACNA size rules:
+
+| Pressure Class | Color | Criteria |
+|---|---|---|
+| Low | Green | Round ≤10" or rectangular ≤80 sq-in |
+| Medium | Orange | Round 11–18" or rectangular 81–250 sq-in |
+| High | Red | Round >18" or rectangular >250 sq-in |
+
+Explicit labels in the drawing (`LP`, `MP`, `HP`) always take precedence over the size-rule fallback.
+
 ---
 
 ## Measurement Data Schema
@@ -191,7 +225,10 @@ Duct overlays are color-coded by type so supply, return, and exhaust paths are i
   "height_in": null,
   "cfm": 400,
   "length_ft": null,
+  "pressure_class": "Low",
+  "pressure_reason": "10\" Ø ≤ 10\" — Low Pressure (SMACNA)",
   "bbox": [2362.5, 2241.0, 2902.5, 2484.0],
+  "polygon": [[2362, 2241], [2902, 2241], [2902, 2484], [2362, 2484]],
   "unmatched": false
 }
 ```
@@ -204,7 +241,10 @@ Duct overlays are color-coded by type so supply, return, and exhaust paths are i
 | `width_in` / `height_in` | Dimensions in inches — rectangular ducts only |
 | `cfm` | Airflow in CFM if a nearby callout was found, otherwise `null` |
 | `length_ft` | Duct run length in feet derived from the drawing scale; `null` when the drawing says "DO NOT SCALE" |
+| `pressure_class` | `Low`, `Medium`, or `High` per SMACNA rules (explicit drawing label takes precedence) |
+| `pressure_reason` | Human-readable explanation of how the pressure class was determined (shown in the web UI popup) |
 | `bbox` | Bounding box in pixel coordinates `[x1, y1, x2, y2]` at 300 DPI |
+| `polygon` | Full polygon vertex list in pixel coordinates — used by the web UI for click-to-inspect |
 | `unmatched` | `true` if no dimension label could be associated with this segment |
 
 ---
@@ -262,20 +302,23 @@ hvac-duct-detection-agentic/          ← repository root
 ├── .env.example                      Template environment file
 ├── .gitignore
 ├── README.md
+├── script.md                         Video walkthrough script
 └── hvac-duct-detection/              Package root (add to sys.path)
+    ├── app.py                        FastAPI web server + session management
     ├── requirements.txt
     ├── pytest.ini
     ├── agents/
     │   ├── orchestrator.py           Pipeline coordinator + reflexion loop
     │   ├── ingestion_agent.py        PDF ingestion
     │   ├── vision_agent.py           Duct detection via Claude vision
-    │   ├── measurement_agent.py      Dimension + CFM extraction
+    │   ├── measurement_agent.py      Dimension + CFM + pressure class extraction
     │   ├── annotation_agent.py       Overlay rendering
     │   └── review_agent.py           Quality scoring + feedback generation
     ├── tools/
     │   ├── pdf_tools.py              PDF → image conversion, text extraction, scale detection
     │   ├── vision_tools.py           Vision API calls, quadrant split, IoU deduplication
     │   ├── measurement_tools.py      Regex dimension parsers, label matching
+    │   ├── pressure_tools.py         Pressure class classification (SMACNA rules)
     │   ├── annotation_tools.py       Drawing primitives, label rendering, PDF export
     │   └── review_tools.py           Confidence scorer, diff checker
     ├── config/
@@ -285,6 +328,11 @@ hvac-duct-detection-agentic/          ← repository root
     │   └── duct_segment.py           Pydantic data models
     ├── scripts/
     │   └── run_pipeline.py           CLI entry point
+    ├── static/
+    │   ├── index.html                Single-page web UI (upload → results)
+    │   ├── style.css                 Dark header, card layout, pressure class badges
+    │   └── app.js                    SVG overlay, click-to-inspect, polling logic
+    ├── uploads/                      Temporary upload storage (auto-cleaned)
     ├── outputs/                      Per-session output directories (git-ignored)
     ├── runs/
     │   └── registry.csv              Persistent run log (git-ignored)
@@ -313,6 +361,9 @@ hvac-duct-detection-agentic/          ← repository root
 | `pymupdf` | PDF rendering and text extraction |
 | `Pillow` | Image processing and overlay composition |
 | `reportlab` | Annotated PDF assembly |
+| `fastapi` | Web server framework for the browser-based UI |
+| `uvicorn` | ASGI server for running the FastAPI app |
+| `python-multipart` | Multipart form data parsing (file uploads) |
 | `pydantic` / `pydantic-settings` | Data validation and `.env` config loading |
 | `structlog` | Structured JSON logging |
 | `python-dotenv` | `.env` file loading |
