@@ -6,6 +6,7 @@ import structlog
 
 from config.settings import settings
 from tools.measurement_tools import dimension_extractor, label_matcher
+from tools.pressure_tools import classify_pressure
 
 logger = structlog.get_logger()
 
@@ -36,6 +37,7 @@ def run_measurement(state: dict) -> dict:
             scale_ratio,
         )
         record = json.loads(record_json)
+        record["pressure_class"] = classify_pressure(seg, record)
         measurements.append(record)
 
         if record["unmatched"]:
@@ -73,6 +75,7 @@ def _export_csv(measurements: list[dict], output_dir: str) -> None:
     fieldnames = [
         "segment_id", "type", "is_round", "diameter_in",
         "width_in", "height_in", "cfm", "length_ft",
+        "pressure_class",
         "bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2", "unmatched",
     ]
     with open(path, "w", newline="") as f:
@@ -89,6 +92,7 @@ def _export_csv(measurements: list[dict], output_dir: str) -> None:
                 "height_in": m.get("height_in", ""),
                 "cfm": m.get("cfm", ""),
                 "length_ft": m.get("length_ft", ""),
+                "pressure_class": m.get("pressure_class", ""),
                 "bbox_x1": round(bbox[0]) if len(bbox) > 0 else "",
                 "bbox_y1": round(bbox[1]) if len(bbox) > 1 else "",
                 "bbox_x2": round(bbox[2]) if len(bbox) > 2 else "",

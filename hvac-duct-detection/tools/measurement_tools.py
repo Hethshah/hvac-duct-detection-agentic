@@ -202,6 +202,7 @@ def label_matcher(segment_json: str, dimension_labels_json: str, scale_ratio: fl
         "cfm": cfm,
         "length_ft": length_ft,
         "bbox": [bx1, by1, bx2, by2],
+        "polygon": polygon,
         "unmatched": unmatched,
     }
     logger.debug("label_matcher", segment_id=seg_id, matched=not unmatched,
