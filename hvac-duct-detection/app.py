@@ -5,6 +5,7 @@ Run from the hvac-duct-detection/ directory:
     uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 """
 import json
+import traceback
 import uuid
 from pathlib import Path
 
@@ -61,8 +62,9 @@ def _run(session_id: str, upload_path: str) -> None:
         logger.info("session_complete", session_id=session_id,
                     segments=len(measurements))
     except Exception as exc:
-        logger.error("session_error", session_id=session_id, error=str(exc))
-        _sessions[session_id].update({"status": "error", "error": str(exc)})
+        tb = traceback.format_exc()
+        logger.error("session_error", session_id=session_id, error=str(exc), traceback=tb)
+        _sessions[session_id].update({"status": "error", "error": str(exc), "traceback": tb})
     finally:
         Path(upload_path).unlink(missing_ok=True)
 

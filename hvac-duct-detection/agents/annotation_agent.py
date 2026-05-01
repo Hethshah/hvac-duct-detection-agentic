@@ -26,7 +26,9 @@ def run_annotation(state: dict) -> dict:
     output_dir = state.get("output_dir", settings.output_dir)
 
     # Build lookup: segment_id → segment (for polygon access)
-    segments_by_id: dict[str, dict] = {s["id"]: s for s in duct_segments}
+    segments_by_id: dict[str, dict] = {
+        s.get("id", f"seg_{i}"): s for i, s in enumerate(duct_segments)
+    }
 
     # Build lookup: segment_id → measurement
     measure_by_seg: dict[str, dict] = {m["segment_id"]: m for m in measurements}
@@ -52,7 +54,7 @@ def run_annotation(state: dict) -> dict:
             duct_type = seg.get("type", "unknown")
             draw_bbox(draw, polygon, duct_type)
 
-            m = measure_by_seg.get(seg["id"])
+            m = measure_by_seg.get(seg.get("id", ""))
             if m:
                 render_label(draw, m, polygon, font, img_size=img.size)
 

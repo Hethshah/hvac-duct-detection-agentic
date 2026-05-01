@@ -80,7 +80,7 @@ def diff_checker(
     if low_conf:
         issues.append(
             f"{len(low_conf)} segment(s) below confidence threshold ({confidence_threshold:.0%}) "
-            f"— IDs: {', '.join(s['id'] for s in low_conf[:5])}"
+            f"— IDs: {', '.join(s.get('id', 'unknown') for s in low_conf[:5])}"
         )
 
     # Unmatched labels
