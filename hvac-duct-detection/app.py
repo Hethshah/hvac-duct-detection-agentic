@@ -24,7 +24,7 @@ from agents.orchestrator import run_pipeline
 
 logger = structlog.get_logger()
 
-app = FastAPI(title="HVAC Duct Detection")
+app = FastAPI(title="HVAC Duct Detection")  
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
