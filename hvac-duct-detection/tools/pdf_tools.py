@@ -20,6 +20,16 @@ _SCALE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Decimal/integer inch = N feet: 1"=10', 1"=20', 0.5"=1'
+# Negative lookbehind avoids spurious match inside fractional notation (e.g. 1/4"=1')
+_DECIMAL_INCH_FT_PATTERN = re.compile(
+    r"(?<![/\d])(\d+\.?\d*)\s*[" + _INCH_CHARS + r"]\s*=\s*(\d+\.?\d*)\s*[" + _FOOT_CHARS + r"]",
+    re.IGNORECASE,
+)
+
+# Metric ratio: SCALE 1:50, 1:100, 1:200 (2-4 digit denominator avoids false hits)
+_METRIC_RATIO_PATTERN = re.compile(r'\b1\s*:\s*(\d{2,4})\b')
+
 
 def pdf_coords_to_pixel(
     x: float, y: float, page_height_pts: float, dpi: int = 300
@@ -144,13 +154,32 @@ def detect_scale_bar(text_blocks_json: str, dpi: int = 300) -> float:
     text_blocks: list[dict] = json.loads(text_blocks_json)
 
     for block in text_blocks:
-        m = _SCALE_PATTERN.search(block["text"])
+        text = block["text"]
+
+        # Fractional inch = 1 foot: 1/4"=1'-0" → pixels_per_foot = dpi * (num/denom)
+        m = _SCALE_PATTERN.search(text)
         if m:
-            numerator = int(m.group(1))
-            denominator = int(m.group(2))
-            ratio = round(dpi * (numerator / denominator), 4)
-            logger.info("detect_scale_bar", matched=block["text"][:60], ratio=ratio)
+            ratio = round(dpi * int(m.group(1)) / int(m.group(2)), 4)
+            logger.info("detect_scale_bar", matched=text[:60], pattern="fractional", ratio=ratio)
             return ratio
+
+        # Decimal inch = N feet: 1"=20' → pixels_per_foot = dpi * scale_in / scale_ft
+        m = _DECIMAL_INCH_FT_PATTERN.search(text)
+        if m and not _SCALE_PATTERN.search(text):
+            scale_in, scale_ft = float(m.group(1)), float(m.group(2))
+            if scale_ft > 0:
+                ratio = round(dpi * scale_in / scale_ft, 4)
+                logger.info("detect_scale_bar", matched=text[:60], pattern="decimal_inch", ratio=ratio)
+                return ratio
+
+        # Metric ratio: 1:50 → pixels_per_foot = dpi * 12 / N  (300 DPI, 12 in/ft)
+        m = _METRIC_RATIO_PATTERN.search(text)
+        if m:
+            n = int(m.group(1))
+            if n > 0:
+                ratio = round(dpi * 12.0 / n, 4)
+                logger.info("detect_scale_bar", matched=text[:60], pattern="metric_ratio", ratio=ratio)
+                return ratio
 
     logger.warning("detect_scale_bar", status="not_found")
     return 0.0

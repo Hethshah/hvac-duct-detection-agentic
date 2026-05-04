@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import structlog
@@ -27,6 +28,12 @@ def _load_font(size: int = FONT_SIZE) -> ImageFont.FreeTypeFont | ImageFont.Imag
         return ImageFont.load_default()
 
 
+def _ft_to_feetinches(ft: float) -> str:
+    total_in = round(ft * 12)
+    feet, inches = divmod(total_in, 12)
+    return f"{feet}'-{inches:02d}\""
+
+
 def _format_label(measurement: dict) -> str:
     """Build compact label string from a MeasurementRecord dict."""
     parts: list[str] = []
@@ -34,8 +41,6 @@ def _format_label(measurement: dict) -> str:
         parts.append(f'{measurement["diameter_in"]}"Ø')
     elif measurement.get("width_in") and measurement.get("height_in"):
         parts.append(f'{measurement["width_in"]}×{measurement["height_in"]}')
-    if measurement.get("length_ft"):
-        parts.append(f'{measurement["length_ft"]:.1f}ft')
     if measurement.get("cfm"):
         parts.append(f'{measurement["cfm"]}CFM')
     return "  ".join(parts)
@@ -45,6 +50,37 @@ def _polygon_centroid(polygon: list[list[float]]) -> tuple[float, float]:
     cx = sum(p[0] for p in polygon) / len(polygon)
     cy = sum(p[1] for p in polygon) / len(polygon)
     return cx, cy
+
+
+def _duct_centerline(
+    polygon: list[list[float]],
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """Return (start, end) midpoints of the duct run for a 4-vertex polygon.
+
+    The two shortest edges are the cross-section ends; their midpoints define
+    the start and end of the duct run centerline.
+    Falls back to bbox long-axis for non-quad polygons.
+    """
+    if len(polygon) == 4:
+        edges = sorted(
+            (math.hypot(polygon[(i+1)%4][0]-polygon[i][0],
+                        polygon[(i+1)%4][1]-polygon[i][1]), i)
+            for i in range(4)
+        )
+        def mid(idx: int) -> tuple[float, float]:
+            a, b = polygon[idx], polygon[(idx + 1) % 4]
+            return (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+        return mid(edges[0][1]), mid(edges[1][1])
+
+    # Fallback: bbox long-axis midpoints
+    xs = [p[0] for p in polygon]
+    ys = [p[1] for p in polygon]
+    bx1, by1, bx2, by2 = min(xs), min(ys), max(xs), max(ys)
+    if (bx2 - bx1) >= (by2 - by1):
+        my = (by1 + by2) / 2
+        return (bx1, my), (bx2, my)
+    mx = (bx1 + bx2) / 2
+    return (mx, by1), (mx, by2)
 
 
 def draw_bbox(
@@ -61,6 +97,62 @@ def draw_bbox(
     draw.polygon(pts, fill=(*rgb, FILL_ALPHA), outline=(*rgb, OUTLINE_ALPHA))
 
 
+def draw_length_annotation(
+    draw: ImageDraw.ImageDraw,
+    polygon: list[list[float]],
+    length_ft: float,
+    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    img_size: tuple[int, int] = (10800, 7200),
+) -> None:
+    """Draw a dimension line along the duct run with a feet-inches length label.
+
+    The line runs between the midpoints of the two cross-section (short) edges,
+    visually annotating which distance was measured and at what scale.
+    """
+    cl = _duct_centerline(polygon)
+    if cl is None:
+        return
+    start, end = cl
+
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    run = math.hypot(dx, dy)
+    if run < 2:
+        return
+
+    # Pale yellow dimension line
+    line_color = (255, 240, 100, 220)
+    draw.line([start, end], fill=line_color, width=3)
+
+    # Perpendicular tick marks at each endpoint
+    px_u, py_u = -dy / run, dx / run
+    tick = 18
+    for ex, ey in [start, end]:
+        draw.line(
+            [(ex + px_u * tick, ey + py_u * tick), (ex - px_u * tick, ey - py_u * tick)],
+            fill=line_color, width=3,
+        )
+
+    # Length label at the midpoint of the line
+    mx = (start[0] + end[0]) / 2
+    my = (start[1] + end[1]) / 2
+    text = _ft_to_feetinches(length_ft)
+
+    img_w, img_h = img_size
+    try:
+        tb = font.getbbox(text)
+        tw, th = tb[2] - tb[0], tb[3] - tb[1]
+    except AttributeError:
+        tw, th = len(text) * 7, 11
+
+    pad = 5
+    lx = max(tw // 2 + pad, min(int(mx), img_w - tw // 2 - pad))
+    ly = max(th // 2 + pad, min(int(my), img_h - th // 2 - pad))
+
+    bg = [lx - tw // 2 - pad, ly - th // 2 - pad, lx + tw // 2 + pad, ly + th // 2 + pad]
+    draw.rectangle(bg, fill=(0, 0, 0, 200))
+    draw.text((lx, ly), text, fill=(255, 240, 100, 255), font=font, anchor="mm")
+
+
 def render_label(
     draw: ImageDraw.ImageDraw,
     measurement: dict,
@@ -70,7 +162,7 @@ def render_label(
 ) -> None:
     """
     Render a compact text label at the polygon centroid.
-    Label format: '8"Ø  150CFM' or '24×12  14.5ft  800CFM'.
+    Label format: '8"Ø  800CFM'. Length is shown separately by draw_length_annotation.
     Draws a dark background box for readability.
     """
     text = _format_label(measurement)

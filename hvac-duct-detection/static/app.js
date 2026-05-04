@@ -220,11 +220,13 @@ function showPopup(seg, event) {
           : `<span class="reason-text" style="font-size:11px;font-style:italic;color:var(--muted)">No CFM callout found near this segment</span>`
         }
       </div>
-      ${seg.length_ft ? `
       <div class="popup-row">
         <span class="popup-label">Length</span>
-        <span class="popup-value">${seg.length_ft} ft</span>
-      </div>` : ''}
+        ${seg.length_ft
+          ? `<span class="popup-value">${ftToFeetInches(seg.length_ft)}</span>`
+          : `<span class="reason-text" style="font-size:11px;font-style:italic;color:var(--muted)">Drawing not to scale — length unavailable</span>`
+        }
+      </div>
     </div>
   `;
 
@@ -287,6 +289,13 @@ function formatDimension(seg) {
   if (seg.is_round && seg.diameter_in) return `${seg.diameter_in}" Ø`;
   if (seg.width_in  && seg.height_in)  return `${seg.width_in}" × ${seg.height_in}"`;
   return '—';
+}
+
+function ftToFeetInches(ft) {
+  const totalIn = Math.round(ft * 12);
+  const feet    = Math.floor(totalIn / 12);
+  const inches  = totalIn % 12;
+  return `${feet}'-${String(inches).padStart(2, '0')}"`;
 }
 
 function showError(msg) {

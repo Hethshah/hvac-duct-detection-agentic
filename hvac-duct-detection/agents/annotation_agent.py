@@ -7,6 +7,7 @@ from config.settings import settings
 from tools.annotation_tools import (
     _load_font,
     draw_bbox,
+    draw_length_annotation,
     export_pdf,
     render_label,
 )
@@ -57,6 +58,8 @@ def run_annotation(state: dict) -> dict:
             m = measure_by_seg.get(seg.get("id", ""))
             if m:
                 render_label(draw, m, polygon, font, img_size=img.size)
+                if m.get("length_ft"):
+                    draw_length_annotation(draw, polygon, m["length_ft"], font, img_size=img.size)
 
             rendered += 1
 
