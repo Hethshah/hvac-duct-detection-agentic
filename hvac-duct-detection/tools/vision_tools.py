@@ -31,6 +31,23 @@ def _image_to_b64(path: str) -> tuple[str, str]:
         return base64.standard_b64encode(f.read()).decode("utf-8"), media_type
 
 
+def _extract_json_object(text: str) -> dict:
+    """Robustly extract a JSON object from a model response."""
+    code_block = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", text)
+    if code_block:
+        try:
+            return json.loads(code_block.group(1))
+        except json.JSONDecodeError:
+            pass
+    obj_match = re.search(r"\{[\s\S]*\}", text)
+    if obj_match:
+        try:
+            return json.loads(obj_match.group(0))
+        except json.JSONDecodeError:
+            pass
+    return {}
+
+
 def _extract_json_from_text(text: str) -> list[dict]:
     """Robustly extract a JSON array from a model response."""
     # Strip markdown code fences
@@ -132,6 +149,43 @@ def _normalize_type(raw: str | None) -> str | None:
     if "exhaust" in t:
         return "exhaust"
     return None
+
+
+# ---------------------------------------------------------------------------
+# Scale + label helpers (not @tool — called directly by ingestion/vision agents)
+# ---------------------------------------------------------------------------
+
+def detect_scale_from_image(image_path: str, dpi: int = 300) -> float:
+    """
+    Ask Claude to read the drawing scale notation (e.g. 1/4"=1'-0") from a page image.
+    Returns pixels_per_foot, or 0.0 if not found.
+    """
+    from config.prompts import SCALE_READER_PROMPT
+
+    img = Image.open(image_path)
+    resized, _ = _resize_for_vision(img)
+    tmp_path = _save_temp_png(resized)
+    try:
+        raw = claude_vision_call(tmp_path, SCALE_READER_PROMPT)
+        result = _extract_json_object(raw)
+    except Exception as e:
+        logger.error("detect_scale_from_image_failed", error=str(e))
+        return 0.0
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+    if not result.get("found"):
+        logger.warning("detect_scale_from_image", status="not_found")
+        return 0.0
+
+    num = result.get("numerator")
+    den = result.get("denominator")
+    if num and den and den > 0:
+        ratio = round(dpi * num / den, 4)
+        logger.info("detect_scale_from_image", scale_text=result.get("scale_text"), ratio=ratio)
+        return ratio
+
+    return 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -251,3 +305,35 @@ def crop_region(image_path: str, bbox_json: str, padding: int = 50) -> str:
     cropped.save(out_path)
     logger.info("crop_region", bbox=[x1, y1, x2, y2], out=out_path)
     return out_path
+
+
+@tool
+def label_finder(image_path: str) -> str:
+    """
+    Find all HVAC duct cross-section dimension labels in a floor plan page image.
+    Looks for round labels (N"Ø / NØ) and rectangular labels (NxM / N"xM").
+    Returns a JSON array of {text, label_type, x, y} dicts in full-page pixel coordinates.
+    """
+    from config.prompts import LABEL_FINDER_PROMPT
+
+    img = Image.open(image_path)
+    resized, scale = _resize_for_vision(img)
+    inv_scale = 1.0 / scale if scale > 0 else 1.0
+    tmp_path = _save_temp_png(resized)
+
+    try:
+        raw = claude_vision_call(tmp_path, LABEL_FINDER_PROMPT)
+        labels = _extract_json_from_text(raw)
+    except Exception as e:
+        logger.error("label_finder_failed", error=str(e))
+        labels = []
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+    # Scale coordinates back to full-page pixel space
+    for lbl in labels:
+        lbl["x"] = round(lbl.get("x", 0) * inv_scale, 1)
+        lbl["y"] = round(lbl.get("y", 0) * inv_scale, 1)
+
+    logger.info("label_finder", image=image_path, found=len(labels))
+    return json.dumps(labels)

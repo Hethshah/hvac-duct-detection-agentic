@@ -44,6 +44,10 @@ def run_ingestion(state: dict) -> dict:
         logger.info("scale_ratio_override_applied", scale_ratio=scale_ratio)
     else:
         scale_ratio = detect_scale_bar(json.dumps(text_blocks), dpi=settings.dpi)
+        if scale_ratio == 0.0 and page_images:
+            logger.info("scale_bar_not_in_text_trying_vision", page=page_images[0])
+            from tools.vision_tools import detect_scale_from_image
+            scale_ratio = detect_scale_from_image(page_images[0], dpi=settings.dpi)
 
     logger.info(
         "ingestion_complete",

@@ -67,6 +67,58 @@ Respond with ONLY a valid JSON array. Use id "seg_focused_001" etc.
 If this region does not contain a duct, respond with exactly: []
 """
 
+LABEL_FINDER_PROMPT = """You are analyzing a mechanical HVAC floor plan. Your task is to find every duct cross-section dimension label.
+
+A duct dimension label is ONLY one of these two forms:
+- Round duct:       a number followed by the diameter symbol (e.g. "18"Ø", "12Ø", "4"∅", "8Ø")
+- Rectangular duct: two numbers separated by x or × (e.g. "22x14", "16"x10"", "18×12")
+
+For EACH label found return:
+- "text": the exact label text as written
+- "label_type": "round" or "rect"
+- "x": pixel x-coordinate of the label center in THIS image
+- "y": pixel y-coordinate of the label center in THIS image
+
+Respond with ONLY a valid JSON array — no explanation, no markdown fences:
+[{"text":"18\\"Ø","label_type":"round","x":430,"y":820},{"text":"22x14","label_type":"rect","x":890,"y":540},...]
+
+If no dimension labels are found, respond with exactly: []
+"""
+
+DUCT_LOCATOR_PROMPT = """You are examining a cropped region of a mechanical HVAC floor plan.
+
+The duct dimension label "{label_text}" annotates one duct visible in this image.
+
+Your task: find the duct this label belongs to and return its outline polygon.
+
+The duct is a filled or outlined rectangular shape — it may be blue (supply), gray/hatched (return), or orange (exhaust). The label is typically placed along the duct or with a leader line pointing to it.
+
+Return ONLY a JSON object — no explanation, no markdown fences:
+{{"polygon":[[x1,y1],[x2,y2],[x3,y3],[x4,y4]],"duct_type":"supply"}}
+
+Where:
+- polygon: 4 corner pixel coordinates of the duct outline in THIS image (clockwise from top-left)
+- duct_type: "supply", "return", "exhaust", or "unknown"
+
+If the duct cannot be clearly identified: {{"polygon":null,"duct_type":"unknown"}}
+"""
+
+SCALE_READER_PROMPT = """Look at this mechanical floor plan. Find the drawing scale notation.
+
+It is typically written as a fraction like:
+- 1/4"=1'-0"   (most common — 1 quarter inch on drawing = 1 foot in reality)
+- 1/8"=1'-0"
+- 3/16"=1'-0"
+- SCALE: 1/4"=1'-0"
+
+It is usually found near the plan title, inside the drawing border at the bottom, or in the title block.
+
+Return ONLY a JSON object — no explanation, no markdown fences:
+{"found":true,"numerator":1,"denominator":4,"scale_text":"1/4\\"=1\\'-0\\""}
+
+If no scale notation is visible: {"found":false,"numerator":null,"denominator":null,"scale_text":null}
+"""
+
 # Placeholder prompts for later phases
 MEASUREMENT_EXTRACTION_PROMPT = """Extract all dimension annotations and CFM values from this mechanical floor plan section.
 

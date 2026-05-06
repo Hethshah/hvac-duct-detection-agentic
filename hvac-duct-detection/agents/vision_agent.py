@@ -1,120 +1,113 @@
 import json
+from pathlib import Path
 
 import structlog
+from PIL import Image
 
-from config.prompts import VISION_FOCUSED_PROMPT
-from config.settings import settings
+from config.prompts import DUCT_LOCATOR_PROMPT
 from tools.vision_tools import (
-    _bbox_from_polygon,
-    _extract_json_from_text,
+    _extract_json_object,
+    _normalize_type,
+    _save_temp_png,
     claude_vision_call,
-    crop_region,
-    segment_detector,
+    label_finder,
 )
 
 logger = structlog.get_logger()
 
+_CROP_SIZE = 600  # px — region cropped around each label center
+
+
+def _locate_duct(image_path: str, label: dict, page_idx: int, counter: int) -> dict | None:
+    """
+    Crop a region around the label and ask Claude to return the duct's polygon.
+    Returns a segment dict in full-page pixel coordinates, or None if not found.
+    """
+    img = Image.open(image_path)
+    img_w, img_h = img.width, img.height
+
+    cx, cy = int(label["x"]), int(label["y"])
+    half = _CROP_SIZE // 2
+    x1 = max(0, cx - half)
+    y1 = max(0, cy - half)
+    x2 = min(img_w, cx + half)
+    y2 = min(img_h, cy + half)
+
+    crop = img.crop((x1, y1, x2, y2))
+    tmp_path = _save_temp_png(crop)
+
+    try:
+        prompt = DUCT_LOCATOR_PROMPT.format(label_text=label["text"])
+        raw = claude_vision_call(tmp_path, prompt)
+        result = _extract_json_object(raw)
+    except Exception as e:
+        logger.error("locate_duct_failed", label=label["text"], error=str(e))
+        return None
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+    polygon = result.get("polygon")
+    if not polygon or not isinstance(polygon, list) or len(polygon) < 3:
+        logger.warning("locate_duct_no_polygon", label=label["text"])
+        return None
+
+    duct_type = _normalize_type(result.get("duct_type")) or "unknown"
+
+    # Offset polygon from crop space back to full-page space
+    full_polygon = [
+        [
+            max(0.0, min(float(p[0]) + x1, img_w)),
+            max(0.0, min(float(p[1]) + y1, img_h)),
+        ]
+        for p in polygon
+    ]
+
+    return {
+        "id": f"seg_{counter:03d}",
+        "type": duct_type,
+        "polygon": full_polygon,
+        "nearby_labels": [label["text"]],
+        "confidence": 0.9,
+        "page": page_idx,
+    }
+
 
 def run_vision(state: dict) -> dict:
     """
-    Run vision pipeline: detect duct segments across all page images.
-    Updates state["duct_segments"] with merged, deduplicated DuctSegment dicts.
+    Run label-first vision pipeline:
+      1. Find all dimension labels on each page (N"Ø, NxM).
+      2. For each label, crop around it and locate the duct polygon.
+    Updates state["duct_segments"] with the resulting segment dicts.
     """
     page_images: list[str] = state["page_images"]
-    text_blocks: list[dict] = state.get("text_blocks", [])
-    reviewer_feedback: str = state.get("reviewer_feedback", "")
-
     all_segments: list[dict] = []
+    seg_counter = 1
 
     for page_idx, image_path in enumerate(page_images):
-        page_blocks = [b for b in text_blocks if b.get("page", 0) == page_idx]
-        page_blocks_json = json.dumps(page_blocks)
+        raw_labels = label_finder(image_path)
+        labels = json.loads(raw_labels)
 
-        # If this is a retry run, inject reviewer feedback into the detector
-        if reviewer_feedback and state.get("retry_count", 0) > 0:
-            from config.prompts import VISION_RETRY_PROMPT
-            from tools.vision_tools import (
-                VISION_MAX_PX,
-                _deduplicate_segments,
-                _normalize_type,
-                _offset_polygon,
-                _resize_for_vision,
-                _save_temp_png,
-                _split_quadrants,
-            )
-            from pathlib import Path
-            from PIL import Image
+        logger.info("vision_labels_found", page=page_idx, count=len(labels))
 
-            retry_prompt = VISION_RETRY_PROMPT.format(feedback=reviewer_feedback)
-            img = Image.open(image_path)
-            quadrants = _split_quadrants(img)
-            retry_segs: list[dict] = []
-            seg_counter = 1
-            for q_idx, (quad_img, ox, oy) in enumerate(quadrants):
-                resized, scale = _resize_for_vision(quad_img)
-                inv_scale = 1.0 / scale if scale > 0 else 1.0
-                tmp_path = _save_temp_png(resized)
-                try:
-                    raw = claude_vision_call(tmp_path, retry_prompt)
-                    segs = _extract_json_from_text(raw)
-                except Exception as e:
-                    logger.error("vision_retry_quadrant_failed", q_idx=q_idx, error=str(e))
-                    segs = []
-                finally:
-                    Path(tmp_path).unlink(missing_ok=True)
-                for seg in segs:
-                    if not (isinstance(seg.get("polygon"), list) and len(seg["polygon"]) >= 3):
-                        continue
-                    seg_type = _normalize_type(seg.get("type"))
-                    if seg_type is None:
-                        continue
-                    seg["type"] = seg_type
-                    seg["polygon"] = _offset_polygon(seg["polygon"], ox, oy, inv_scale)
-                    seg["id"] = f"seg_retry_{seg_counter:03d}"
-                    seg["page"] = page_idx
-                    retry_segs.append(seg)
-                    seg_counter += 1
-            page_segments = _deduplicate_segments(retry_segs)
-        else:
-            raw = segment_detector(image_path, page_blocks_json)
-            page_segments = json.loads(raw)
+        page_segments: list[dict] = []
+        for label in labels:
+            seg = _locate_duct(image_path, label, page_idx, seg_counter)
+            if seg:
+                page_segments.append(seg)
+                seg_counter += 1
 
-        # Low-confidence retry: crop and re-inspect flagged segments
-        refined: list[dict] = []
-        for seg in page_segments:
-            if seg.get("confidence", 1.0) < settings.confidence_threshold:
-                bbox = list(_bbox_from_polygon(seg["polygon"]))
-                crop_path = crop_region(image_path, json.dumps(bbox))
-                try:
-                    raw_focused = claude_vision_call(crop_path, VISION_FOCUSED_PROMPT)
-                    focused_segs = _extract_json_from_text(raw_focused)
-                    if focused_segs:
-                        best = max(focused_segs, key=lambda s: s.get("confidence", 0.0))
-                        # Keep original polygon (full-page coords) but update type/confidence
-                        seg["type"] = best.get("type", seg["type"])
-                        seg["confidence"] = max(best.get("confidence", 0.0), seg["confidence"])
-                        seg["nearby_labels"] = best.get("nearby_labels", seg.get("nearby_labels", []))
-                except Exception as e:
-                    logger.warning("focused_retry_failed", seg_id=seg.get("id", "unknown"), error=str(e))
-            refined.append(seg)
-
-        # Set page index on all segments
-        for seg in refined:
-            seg["page"] = page_idx
-
-        type_counts = {}
-        for seg in refined:
-            type_counts[seg.get("type", "unknown")] = type_counts.get(seg.get("type", "unknown"), 0) + 1
-        low_conf = sum(1 for s in refined if s.get("confidence", 1.0) < settings.confidence_threshold)
+        type_counts: dict[str, int] = {}
+        for s in page_segments:
+            type_counts[s["type"]] = type_counts.get(s["type"], 0) + 1
 
         logger.info(
             "vision_page_complete",
             page=page_idx,
-            segments=len(refined),
+            labels=len(labels),
+            segments=len(page_segments),
             types=type_counts,
-            low_confidence=low_conf,
         )
-        all_segments.extend(refined)
+        all_segments.extend(page_segments)
 
     state["duct_segments"] = all_segments
     logger.info("vision_complete", total_segments=len(all_segments))
