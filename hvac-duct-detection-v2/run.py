@@ -13,6 +13,7 @@ Phases:
   4. Duct annotation          (labels → AnnotatedDucts, physical dimensions)
   5. Vision cross-validation  (Claude vision → confidence update for mismatches)
   6. Render + summary         (annotated PNG + summary.json)
+
 """
 
 import argparse
@@ -22,6 +23,14 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+
+# Load .env from repo root or current dir (sets ANTHROPIC_API_KEY etc.)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent.parent / ".env")
+    load_dotenv(Path(__file__).parent / ".env")
+except ImportError:
+    pass
 
 from config.settings import OUTPUTS_DIR
 from tools.vector_duct_extractor import extract_ducts

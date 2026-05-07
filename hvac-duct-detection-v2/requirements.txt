@@ -5,3 +5,5 @@ anthropic
 Pillow
 reportlab
 structlog
+python-dotenv
+flask

@@ -6,6 +6,10 @@ Usage:
     cd hvac-duct-detection-v2
     python3 web_app.py
     Open http://localhost:5000
+
+
+pkill -f "python3 web_app.py"
+To kill the application
 """
 
 import json
@@ -14,6 +18,13 @@ import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except ImportError:
+    pass
 
 import fitz
 from flask import Flask, jsonify, render_template, request, send_file
@@ -239,5 +250,7 @@ def get_pdf(sid):
 
 
 if __name__ == "__main__":
+    import logging
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
     print("HVAC Duct Inspector → http://localhost:5000")
     app.run(debug=False, port=5000, host="0.0.0.0")
