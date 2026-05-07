@@ -35,6 +35,9 @@ hvac-duct-detection/tests/
 *.jpeg
 *.docx
 
+# Old v1 pipeline (superseded by hvac-duct-detection-v2)
+hvac-duct-detection/
+
 # Project-specific docs & reference files
 AGENTS.md
 dev.md

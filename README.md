@@ -1,353 +1,229 @@
 # Automated HVAC Duct Detection and Annotation Tool
 
-An agentic AI pipeline that ingests mechanical floor plan PDFs (M-plans), detects and classifies HVAC duct segments (supply / return / exhaust), associates dimension annotations and CFM callouts with each segment, and outputs an annotated PDF with colored overlays and structured data exports (JSON + CSV).
+An automated pipeline that ingests mechanical floor plan PDFs, detects HVAC duct segments directly from CAD vector geometry, associates dimension labels, measures physical lengths, and produces annotated drawings with structured data exports.
 
 ---
 
 ## How It Works
 
 ```
-PDF → Ingestion → Vision → Measurement → Annotation → Review
-                     ↑_________ reflexion feedback _________↑
+PDF Drawing (CAD export)
+        │
+        ▼
+Phase 1 — Vector duct extraction     Read exact coordinates from PDF paths
+        ▼
+Phase 2 — Scale calibration          Parse dimension text, derive pt/ft scale
+        ▼
+Phase 3 — Raster fallback            OpenCV morphology for non-quad ducts
+        ▼
+Phase 4 — Label association          Match labels to ducts, compute lengths
+        ▼
+Phase 5 — Vision cross-validation    Claude Opus reviews low-confidence ducts
+        ▼
+Phase 6 — Rendering                  Annotated PNG + PDF with blue centerlines
 ```
 
-The pipeline runs five specialized agents in sequence. If the quality score from the Review agent falls below the confidence threshold, it automatically retries the Vision → Measurement → Annotation → Review cycle with targeted feedback — up to `--max-retries` times.
-
-You can run the pipeline from the **CLI** or through the **web UI** — both produce the same annotated PDF and structured data outputs.
-
-| Agent | Model | Role |
-|---|---|---|
-| Ingestion | claude-haiku-4-5 | Renders PDF pages to 300 DPI images, extracts text blocks with coordinates, detects the drawing scale |
-| Vision | claude-opus-4-7 | Splits each page into quadrants, detects duct segments with bounding polygons, deduplicates overlaps |
-| Measurement | claude-sonnet-4-6 | Matches each detected segment to its dimension label (e.g. `12"Ø`), CFM callout, and pressure class |
-| Annotation | pure Python | Draws colored overlays on the page images and exports an annotated PDF |
-| Review | claude-sonnet-4-6 | Scores output quality (0–1) and generates targeted feedback for failed attempts |
+The pipeline reads duct geometry **directly from PDF vector paths** — no LLM coordinate guessing. Claude vision is used only in Phase 5 for semantic validation of ambiguous detections.
 
 ---
 
-## Prerequisites
+## Quick Start
 
-- **Python 3.10 or higher**
-- **An Anthropic API key** — get one at [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)
+### Prerequisites
+
+- Python 3.10+
+- An Anthropic API key (only required for Phase 5 vision validation)
+
+### Setup
+
+```bash
+git clone <repo-url>
+cd "Automated HVAC Duct Detection and Annotation Tool - Agentic"
+
+cd hvac-duct-detection-v2
+pip install -r requirements.txt
+pip install flask
+```
+
+Set your API key (only needed if not using `--skip-vision`):
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+```
 
 ---
 
-## Setup
+## Usage
 
-### 1. Clone the repository
+### Web Application
 
-```bash
-git clone https://github.com/Hethshah/hvac-duct-detection-agentic.git
-cd hvac-duct-detection-agentic
-```
-
-### 2. Create a virtual environment and install dependencies
+The easiest way to use the tool. Upload a PDF, get an interactive annotated floor plan you can hover to inspect each duct.
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate          # Linux / macOS
-# .venv\Scripts\activate           # Windows
-pip install -r hvac-duct-detection/requirements.txt
+cd hvac-duct-detection-v2
+python3 web_app.py
 ```
 
-### 3. Configure your API key
+Open **http://localhost:5000** in your browser.
 
-Copy the example environment file and fill in your key:
+**What the web app does:**
+1. Upload a PDF via drag-and-drop or file picker
+2. Pipeline runs Phases 1–4 and 6 automatically (~3 seconds)
+3. Interactive floor plan appears — hover any blue annotation line to see:
+   - Type of duct (Supply / Return / Exhaust)
+   - Pressure class (Low / Medium / High)
+   - Section type and dimension (e.g. `24" × 18"` or `Ø 12"`)
+   - Measured length in feet
+4. Right panel lists all detected ducts — click any to pan the plan to it
+5. Download buttons for annotated PNG and PDF
+
+### CLI Pipeline
 
 ```bash
-cp .env.example .env
+cd hvac-duct-detection-v2
+python3 run.py "../sample input/input1.pdf" --skip-vision
 ```
 
-Open `.env` and set your key:
-
-```env
-ANTHROPIC_API_KEY=sk-ant-api03-...
-```
-
-All other settings are optional — the defaults shown in `.env.example` work out of the box.
-
----
-
-## Running the Web UI
-
-The easiest way to use the tool is through the browser-based interface. Start the server from the `hvac-duct-detection/` directory:
-
+With vision validation (requires API key):
 ```bash
-cd hvac-duct-detection
-uvicorn app:app --host 0.0.0.0 --port 8000
+python3 run.py "../sample input/input1.pdf"
 ```
 
-Then open [http://localhost:8000](http://localhost:8000) in your browser.
-
-**What the web UI does:**
-1. Upload a PDF mechanical floor plan via drag-and-drop or file picker
-2. The pipeline runs in the background — a progress indicator shows while processing
-3. Results appear as a side-by-side view: annotated image on the left, measurement table on the right
-4. **Click any highlighted duct region** on the image to see a popup with its dimensions, CFM, and pressure class
-5. The full measurement table shows all segments with color-coded pressure class badges (Low / Medium / High)
-
----
-
-## Running the Pipeline (CLI)
-
-All commands are run from the **repository root** with the virtual environment active.
-
-### Basic usage
-
-```bash
-python hvac-duct-detection/scripts/run_pipeline.py --pdf "path/to/plan.pdf"
-```
-
-### Full example with all options
-
-```bash
-python hvac-duct-detection/scripts/run_pipeline.py \
-  --pdf "sample input/input.pdf" \
-  --confidence 0.85 \
-  --max-retries 3 \
-  --pages "1-3"
-```
-
-### CLI Parameters
-
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `--pdf` | path | *(required)* | Path to the input PDF mechanical floor plan |
-| `--confidence` | float | `0.85` | Minimum quality score (0.0–1.0) to accept output without retrying. Overrides `.env`. |
-| `--max-retries` | int | `3` | Maximum reflexion retries before accepting best-effort output. Overrides `.env`. |
-| `--scale-ratio` | float | auto-detect | Manual pixels-per-foot override. Useful when the drawing says "DO NOT SCALE". At 300 DPI, `1/4"=1'-0"` ≈ `75.0`. |
-| `--pages` | string | all pages | 1-based page range to process. Supports ranges, lists, and single pages — e.g. `1-3`, `2,4,6`, `5`. |
+| Option | Description |
+|---|---|
+| `--skip-vision` | Skip Phase 5 (no API calls, faster) |
+| `--output-dir DIR` | Custom output directory (default: `outputs/{stem}/`) |
 
 ---
 
 ## Output
 
-Every run gets a **unique session directory** created automatically inside `hvac-duct-detection/outputs/`. You never need to specify an output path.
+Every run writes to `hvac-duct-detection-v2/outputs/{stem}/`:
 
 ```
-hvac-duct-detection/outputs/<session_id>/
-├── pages/
-│   ├── page_000.png                     Raw page render at 300 DPI
-│   └── page_000_crop_<x1>_<y1>_...png  Focused crop regions (low-confidence re-checks)
-├── page_000_annotated.png               Annotated page with colored duct overlays
-├── annotated.pdf                        Final annotated PDF (all processed pages)
-├── measurements.json                    Structured duct data — one record per segment
-└── measurements.csv                     Same data in spreadsheet format
+outputs/input1/
+├── input1_annotated.png            Annotated floor plan image (72 DPI)
+├── input1_annotated.pdf            Annotated PDF with vector blue centerlines
+└── artifacts/
+      ├── phase2_labels.json        All parsed dimension labels with coordinates
+      ├── phase4_annotated_ducts.json  One record per duct (measurements + labels)
+      └── summary.json              Run summary with all duct data
 ```
 
-### Session ID
+### Annotation Style
 
-Each session ID follows the format `YYYYMMDD_HHMMSS_<6-char hex>` — for example `20260428_125629_1ecd8a`. This guarantees runs never overwrite each other.
+Each detected duct is annotated with:
+- A **blue centerline** (`#3762E3`) running the exact measured length of the duct
+- A **numbered label box** with a leader line to the duct midpoint
 
-### Terminal output
+Color coding in the web app:
 
-When the pipeline completes, a summary is printed:
-
-```
-========================================================
-  HVAC Duct Detection — Pipeline Complete
-========================================================
-  session_id        : 20260428_125629_1ecd8a
-  input_path        : /path/to/sample input/input.pdf
-  output_dir        : hvac-duct-detection/outputs/20260428_125629_1ecd8a
-  output_pdf        : .../20260428_125629_1ecd8a/annotated.pdf
-  output_png        : .../20260428_125629_1ecd8a/page_000_annotated.png
-  segments_detected : 15
-  segments_labelled : 15
-  review_score      : 1.0000
-  retries           : 0
-  Run log           : hvac-duct-detection/runs/registry.csv
-========================================================
-```
-
----
-
-## Run Registry
-
-Every pipeline run is automatically appended to a persistent CSV log at:
-
-```
-hvac-duct-detection/runs/registry.csv
-```
-
-This file is created on first run and acts as a history of all sessions.
-
-| Column | Description |
+| Type | Color |
 |---|---|
-| `session_id` | Unique run identifier |
-| `timestamp` | Date and time the run completed |
-| `input_path` | Absolute path to the input PDF |
-| `output_dir` | Session output directory |
-| `output_pdf` | Path to the annotated PDF |
-| `output_png` | Semicolon-separated paths to annotated PNGs (one per page) |
-| `segments_detected` | Total duct segments found |
-| `segments_labelled` | Segments successfully matched to a dimension/CFM label |
-| `review_score` | Final quality score (0.0–1.0) |
-| `retries` | Number of reflexion retries used |
+| Supply Air | Blue `#3762E3` |
+| Return Air | Amber `#D97706` |
+| Exhaust Air | Green `#059669` |
+
+| Pressure | Color | Criteria |
+|---|---|---|
+| Low | Green | Largest dimension ≥ 24" |
+| Medium | Orange | 12–24" |
+| High | Red | < 12" |
 
 ---
 
-## Duct Type Color Coding
+## Duct Data Schema
 
-Duct overlays are color-coded by type so supply, return, and exhaust paths are immediately distinguishable:
-
-| Type | Color | Hex |
-|---|---|---|
-| Supply | Blue | `#1565C0` |
-| Return | Red | `#C62828` |
-| Exhaust | Orange | `#E65100` |
-
-### Pressure Class Badges (Web UI)
-
-In the web UI, each segment row also shows a pressure class badge based on SMACNA size rules:
-
-| Pressure Class | Color | Criteria |
-|---|---|---|
-| Low | Green | Round ≤10" or rectangular ≤80 sq-in |
-| Medium | Orange | Round 11–18" or rectangular 81–250 sq-in |
-| High | Red | Round >18" or rectangular >250 sq-in |
-
-Explicit labels in the drawing (`LP`, `MP`, `HP`) always take precedence over the size-rule fallback.
-
----
-
-## Measurement Data Schema
-
-`measurements.json` contains one record per detected duct segment:
+`phase4_annotated_ducts.json` — one record per detected segment:
 
 ```json
 {
-  "segment_id": "seg_003",
-  "type": "return",
-  "is_round": true,
-  "diameter_in": 10,
-  "width_in": null,
-  "height_in": null,
-  "cfm": 400,
-  "length_ft": null,
-  "pressure_class": "Low",
-  "pressure_reason": "10\" Ø ≤ 10\" — Low Pressure (SMACNA)",
-  "bbox": [2362.5, 2241.0, 2902.5, 2484.0],
-  "polygon": [[2362, 2241], [2902, 2241], [2902, 2484], [2362, 2484]],
-  "unmatched": false
+  "id": "C03",
+  "duct_idx": "duct_003",
+  "rect": [1259.2, 491.5, 1709.0, 561.5],
+  "orientation": "H",
+  "length_ft_measured": 18.556,
+  "length_ft_label": 18.4167,
+  "length_mismatch": false,
+  "cross_section": {"width_in": 24, "height_in": 18},
+  "is_round": false,
+  "unlabeled": false,
+  "confidence": 1.0,
+  "source": "vector",
+  "page": 0
 }
 ```
 
 | Field | Description |
 |---|---|
-| `type` | `supply`, `return`, or `exhaust` |
-| `is_round` | `true` for circular ducts (e.g. `10"Ø`), `false` for rectangular |
-| `diameter_in` | Diameter in inches — round ducts only |
-| `width_in` / `height_in` | Dimensions in inches — rectangular ducts only |
-| `cfm` | Airflow in CFM if a nearby callout was found, otherwise `null` |
-| `length_ft` | Duct run length in feet derived from the drawing scale; `null` when the drawing says "DO NOT SCALE" |
-| `pressure_class` | `Low`, `Medium`, or `High` per SMACNA rules (explicit drawing label takes precedence) |
-| `pressure_reason` | Human-readable explanation of how the pressure class was determined (shown in the web UI popup) |
-| `bbox` | Bounding box in pixel coordinates `[x1, y1, x2, y2]` at 300 DPI |
-| `polygon` | Full polygon vertex list in pixel coordinates — used by the web UI for click-to-inspect |
-| `unmatched` | `true` if no dimension label could be associated with this segment |
+| `id` | Duct identifier from drawing text (C01, SA3, etc.) or `null` |
+| `rect` | Bounding box `[x0, y0, x1, y1]` in PDF points |
+| `orientation` | `H` horizontal, `V` vertical, `D` diagonal |
+| `length_ft_measured` | Physical length from vector geometry ÷ calibrated scale |
+| `length_ft_label` | Length from matched dimension label, or `null` |
+| `length_mismatch` | `true` if measured vs. label differ by more than 15% |
+| `cross_section` | `{"width_in":24,"height_in":18}` or `{"diameter_in":12}` |
+| `unlabeled` | `true` when no dimension or cross-section label was found |
+| `source` | `"vector"` (Phase 1) or `"raster"` (Phase 3 fallback) |
 
 ---
 
-## Reflexion Loop
+## Technical Documentation
 
-If the review score is below `--confidence`, Claude generates targeted feedback and the pipeline retries automatically:
-
-```
-Attempt 1 → score 0.62  (below 0.85) → feedback generated → retry
-Attempt 2 → score 0.89  (above 0.85) → accepted ✓
-```
-
-Retries use exponential back-off: `2 ^ retry_count` seconds — so 2 s, 4 s, 8 s, … between attempts.
-
-Once `--max-retries` is exhausted, the best-effort result is accepted and a warning is logged.
+See [`hvac-duct-detection-v2/doc.md`](hvac-duct-detection-v2/doc.md) for a full walkthrough of every phase — what it does, why, the algorithm steps, and the design decisions behind the approach.
 
 ---
 
 ## Running Tests
 
-Tests live in `hvac-duct-detection/tests/` and are run from the `hvac-duct-detection/` directory.
-
 ```bash
-cd hvac-duct-detection
-source ../.venv/bin/activate   # if not already active
-
-# Unit tests — no API key required
-python -m pytest -q
-
-# Unit + integration tests — requires ANTHROPIC_API_KEY in .env
-python -m pytest -q -m integration
+cd hvac-duct-detection-v2
+python3 -m pytest tests/ -v
 ```
 
-Test coverage includes:
+157 tests across 6 phases (unit + integration). Integration tests require the sample PDF at `sample input/input1.pdf`.
 
-| Test file | What it covers |
+| Test file | Coverage |
 |---|---|
-| `test_orchestrator.py` | State initialisation, summary building, reflexion loop, retry back-off |
-| `test_pipeline.py` | End-to-end mocked pipeline + 3 live integration tests |
-| `test_hardening.py` | Page range parsing, RGB mode, raster-only PDFs, polygon clamping, rate-limit retries, IoU dedup |
-| `test_cli.py` | Session ID generation, registry writing, CLI argument handling |
-| `test_ingestion.py` | Text extraction, scale detection |
-| `test_vision.py` | Quadrant splitting, segment deduplication |
-| `test_measurement.py` | Dimension regex patterns, label matching |
-| `test_annotation.py` | Overlay drawing, PDF export |
-| `test_review.py` | Confidence scoring formula, diff checker |
+| `test_phase1.py` | Vector extraction, clustering, diagonal detection |
+| `test_phase2.py` | Scale calibration, label parsing, multi-span merge |
+| `test_phase3.py` | Raster morphology, parallel-pair matching, IoU dedup |
+| `test_phase4.py` | Label-duct association, plausibility gate, mismatch flag |
+| `test_phase5.py` | Vision trigger logic, mocked API calls, crop rendering |
+| `test_phase6.py` | Pixel coordinate transform, centerline geometry, CLI end-to-end |
 
 ---
 
 ## Project Structure
 
 ```
-hvac-duct-detection-agentic/          ← repository root
-├── .env.example                      Template environment file
-├── .gitignore
-├── README.md
-├── script.md                         Video walkthrough script
-└── hvac-duct-detection/              Package root (add to sys.path)
-    ├── app.py                        FastAPI web server + session management
-    ├── requirements.txt
-    ├── pytest.ini
-    ├── agents/
-    │   ├── orchestrator.py           Pipeline coordinator + reflexion loop
-    │   ├── ingestion_agent.py        PDF ingestion
-    │   ├── vision_agent.py           Duct detection via Claude vision
-    │   ├── measurement_agent.py      Dimension + CFM + pressure class extraction
-    │   ├── annotation_agent.py       Overlay rendering
-    │   └── review_agent.py           Quality scoring + feedback generation
-    ├── tools/
-    │   ├── pdf_tools.py              PDF → image conversion, text extraction, scale detection
-    │   ├── vision_tools.py           Vision API calls, quadrant split, IoU deduplication
-    │   ├── measurement_tools.py      Regex dimension parsers, label matching
-    │   ├── pressure_tools.py         Pressure class classification (SMACNA rules)
-    │   ├── annotation_tools.py       Drawing primitives, label rendering, PDF export
-    │   └── review_tools.py           Confidence scorer, diff checker
-    ├── config/
-    │   ├── settings.py               Pydantic-settings with .env auto-discovery
-    │   └── prompts.py                All LLM prompt templates
-    ├── models/
-    │   └── duct_segment.py           Pydantic data models
-    ├── scripts/
-    │   └── run_pipeline.py           CLI entry point
-    ├── static/
-    │   ├── index.html                Single-page web UI (upload → results)
-    │   ├── style.css                 Dark header, card layout, pressure class badges
-    │   └── app.js                    SVG overlay, click-to-inspect, polling logic
-    ├── uploads/                      Temporary upload storage (auto-cleaned)
-    ├── outputs/                      Per-session output directories (git-ignored)
-    ├── runs/
-    │   └── registry.csv              Persistent run log (git-ignored)
-    └── tests/
-        ├── conftest.py               Shared fixtures
-        ├── fixtures/                 JSON test data
-        ├── test_orchestrator.py
-        ├── test_pipeline.py
-        ├── test_hardening.py
-        ├── test_cli.py
-        ├── test_ingestion.py
-        ├── test_vision.py
-        ├── test_measurement.py
-        ├── test_annotation.py
-        └── test_review.py
+hvac-duct-detection-v2/
+├── run.py                      CLI entry point (Phases 1–6)
+├── web_app.py                  Flask web application
+├── doc.md                      End-to-end process documentation
+├── requirements.txt
+├── config/
+│   ├── settings.py             All calibrated constants and thresholds
+│   └── prompts.py              Phase 5 Claude vision prompt
+├── models/
+│   ├── duct_segment.py         DuctSegment dataclass (Phases 1–3)
+│   └── annotated_duct.py       AnnotatedDuct dataclass (Phases 4–6)
+├── tools/
+│   ├── vector_duct_extractor.py  Phase 1 — PDF path extraction
+│   ├── label_extractor.py        Phase 2 — text parsing + scale calibration
+│   ├── raster_duct_extractor.py  Phase 3 — OpenCV morphology fallback
+│   ├── duct_annotator.py         Phase 4 — label association + measurement
+│   ├── vision_validator.py       Phase 5 — Claude Opus cross-validation
+│   └── annotation_renderer.py   Phase 6 — PNG/PDF rendering
+├── templates/
+│   └── index.html              Web application UI
+├── tests/
+│   ├── test_phase1.py
+│   ├── test_phase2.py
+│   ├── test_phase3.py
+│   ├── test_phase4.py
+│   ├── test_phase5.py
+│   └── test_phase6.py
+└── outputs/                    Per-run outputs (git-ignored)
 ```
 
 ---
@@ -356,15 +232,19 @@ hvac-duct-detection-agentic/          ← repository root
 
 | Package | Purpose |
 |---|---|
-| `anthropic` | Claude API client (vision, text generation) |
-| `strands-agents` | Agent SDK used to build each pipeline agent |
-| `pymupdf` | PDF rendering and text extraction |
-| `Pillow` | Image processing and overlay composition |
-| `reportlab` | Annotated PDF assembly |
-| `fastapi` | Web server framework for the browser-based UI |
-| `uvicorn` | ASGI server for running the FastAPI app |
-| `python-multipart` | Multipart form data parsing (file uploads) |
-| `pydantic` / `pydantic-settings` | Data validation and `.env` config loading |
-| `structlog` | Structured JSON logging |
-| `python-dotenv` | `.env` file loading |
-| `pytest` / `pytest-mock` | Test runner and mocking utilities |
+| `pymupdf` | PDF vector extraction, text reading, rendering, annotation writing |
+| `opencv-python` | Phase 3 raster morphology |
+| `numpy` | Phase 3 image arrays |
+| `anthropic` | Phase 5 Claude Opus vision validation |
+| `Pillow` | PNG rendering and centerline drawing |
+| `flask` | Web application server |
+
+---
+
+## Why Vector-First?
+
+The previous version of this tool (v1) used Claude vision to estimate pixel coordinates for duct bounding boxes. This produced systematically misaligned annotations because LLMs cannot return pixel-accurate coordinates from rendered images.
+
+HVAC mechanical drawings are exported directly from CAD software. Every duct rectangle exists as an exact vector path with precise coordinates already stored in the PDF. Reading those coordinates directly — bypassing image recognition entirely — gives exact results with no approximation error.
+
+Vision (Claude Opus) is still used in Phase 5, but only to answer semantic questions ("is this a duct or a fitting?") rather than geometric ones ("where exactly is the boundary?").
