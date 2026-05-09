@@ -9,8 +9,6 @@ from typing import Callable
 import anthropic
 import fitz
 
-V2_DIR = Path(__file__).parent.parent / "hvac-duct-detection-v2"
-sys.path.insert(0, str(V2_DIR))
 sys.path.insert(0, str(Path(__file__).parent))
 
 try:
@@ -331,7 +329,6 @@ def run_agent(
             system=SYSTEM_PROMPT,
             tools=TOOL_DEFINITIONS,
             messages=messages,
-            temperature=0,
         )
 
         for block in response.content:

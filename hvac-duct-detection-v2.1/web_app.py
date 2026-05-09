@@ -20,9 +20,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-V2_DIR = Path(__file__).resolve().parent.parent / "hvac-duct-detection-v2"
-sys.path.insert(0, str(V2_DIR))
-
 try:
     from dotenv import load_dotenv
     load_dotenv(Path(__file__).resolve().parent.parent / ".env")
