@@ -2,7 +2,15 @@
 Phase 2 — Text & Scale Calibration
 
 Extracts dimension labels (length, cross-section, duct IDs) from the PDF
-native text layer. Derives calibrated pt_per_ft from label+segment pairs.
+native text layer. Derives calibrated pt_per_ft in two ways:
+
+  1. Explicit scale text (preferred): searches the entire page (including
+     title block) for notation like "1/4\" = 1'-0\"", "1:48", or "1\" = 10'-0\"".
+     Converts the ratio directly to pt/ft — no sampling error.
+
+  2. Empirical calibration (fallback): matches length labels to nearby duct
+     segments, computes pt_per_ft = seg.long_pt / label_feet, takes the median.
+     Used when no explicit scale text is found (e.g., "DO NOT SCALE DRAWINGS").
 
 Key facts verified on input1.pdf:
 - page.get_text("dict") returns bboxes in un-rotated MEDIA coordinates —
@@ -47,6 +55,18 @@ _RE_CROSS_ROUND = re.compile(r'(\d+)["\']?\s*[Øø⌀]', re.UNICODE)
 
 # Duct ID: 1–3 uppercase letters + 1–3 digits (C01, C02, SA12, RA3 …)
 _RE_DUCT_ID = re.compile(r"^[A-Z]{1,3}\d{1,3}$")
+
+# ── Drawing scale patterns ─────────────────────────────────────────────────────
+# Matches anywhere in a text span so "SCALE: 1/4" = 1'-0"" is handled automatically.
+
+# Fraction-inch = 1 foot:  1/4" = 1'-0"  |  3/16" = 1'  |  1/4"=1'-0"
+_RE_SCALE_FRAC = re.compile(r'(\d+)\s*/\s*(\d+)\s*["“”]?\s*=\s*1\s*[\'`’-]', re.IGNORECASE)
+
+# Whole-inch = N feet:  1" = 10'-0"  |  1" = 20'
+_RE_SCALE_INCH = re.compile(r'1\s*["“”]\s*=\s*(\d+)\s*[\'`’-]', re.IGNORECASE)
+
+# Ratio:  1:48  |  1 : 96  |  1:100
+_RE_SCALE_RATIO = re.compile(r'\b1\s*:\s*(\d{2,4})\b')
 
 
 # ── Text span extraction ──────────────────────────────────────────────────────
@@ -184,6 +204,88 @@ def _classify_span(span: dict) -> dict | None:
         }
 
     return None
+
+
+# ── Explicit scale reader ─────────────────────────────────────────────────────
+
+def _parse_scale_notation(text: str) -> float | None:
+    """
+    Parse a single text string for an explicit drawing scale → pt_per_ft.
+
+    Conversion formulas:
+      N/D" = 1'-0"  →  pt_per_ft = (N/D) × 72
+      1" = F'-0"    →  pt_per_ft = 72 / F
+      1:R           →  pt_per_ft = (72 × 12) / R  (1 paper-inch = R real-inches = R/12 ft)
+
+    No PT_PER_FT_MIN/MAX gate here — explicit scale text is trusted directly.
+    Only a broad sanity bound (1–500 pt/ft) guards against parse garbage.
+    """
+    # Fraction inch = 1 foot  (e.g. "1/4" = 1'-0"")
+    m = _RE_SCALE_FRAC.search(text)
+    if m:
+        num, den = int(m.group(1)), int(m.group(2))
+        if den > 0:
+            pt_per_ft = (num / den) * 72.0
+            if 1.0 <= pt_per_ft <= 500.0:
+                return round(pt_per_ft, 4)
+
+    # Whole inch = N feet  (e.g. "1" = 10'-0"")
+    m = _RE_SCALE_INCH.search(text)
+    if m:
+        feet = int(m.group(1))
+        if feet > 0:
+            pt_per_ft = 72.0 / feet
+            if 1.0 <= pt_per_ft <= 500.0:
+                return round(pt_per_ft, 4)
+
+    # Ratio  (e.g. "1:48")
+    m = _RE_SCALE_RATIO.search(text)
+    if m:
+        ratio = int(m.group(1))
+        if ratio > 0:
+            pt_per_ft = (72.0 * 12.0) / ratio
+            if 1.0 <= pt_per_ft <= 500.0:
+                return round(pt_per_ft, 4)
+
+    return None
+
+
+def _find_explicit_scale(page: fitz.Page) -> tuple[float, str] | tuple[None, None]:
+    """
+    Search the ENTIRE page (including title block) for explicit scale notation.
+
+    Returns (pt_per_ft, matched_text) if found, else (None, None).
+    Tries raw spans first (catches single-span labels like "1/4"=1'-0""),
+    then merged adjacent spans (catches split labels like  "1/4""  "=  1'-0"").
+    """
+    # Collect all page text — no title-block exclusion
+    raw_spans: list[dict] = []
+    for block in page.get_text("dict")["blocks"]:
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                t = span["text"].strip()
+                if t:
+                    bbox = span["bbox"]
+                    raw_spans.append({
+                        "text": t,
+                        "bbox": list(bbox),
+                        "cx": (bbox[0] + bbox[2]) / 2.0,
+                        "cy": (bbox[1] + bbox[3]) / 2.0,
+                    })
+
+    # Pass 1 — individual spans
+    for span in raw_spans:
+        pt_per_ft = _parse_scale_notation(span["text"])
+        if pt_per_ft is not None:
+            return pt_per_ft, span["text"]
+
+    # Pass 2 — merge adjacent spans on the same line and retry
+    for span in _merge_adjacent_spans(raw_spans):
+        pt_per_ft = _parse_scale_notation(span["text"])
+        if pt_per_ft is not None:
+            return pt_per_ft, span["text"]
+
+    return None, None
 
 
 # ── Scale calibration ─────────────────────────────────────────────────────────
@@ -325,25 +427,46 @@ def extract_labels_with_scale(
     """
     Full Phase 2 pipeline: extract labels, calibrate scale, associate to ducts.
 
+    Scale derivation (two-stage):
+      1. Search entire page for explicit scale text ("1/4\" = 1'-0\"", "1:48", etc.)
+         → direct conversion, no sampling error.
+      2. If not found, fall back to empirical calibration: match length labels
+         to nearby duct segments and take the median pt_per_ft.
+
     Returns a dict with:
-      pt_per_ft        — calibrated points-per-foot
-      scale_text       — "derived" (no explicit scale bar in input1.pdf)
-      label_count      — total distinct labels parsed
-      labels           — list of label dicts, each with nearest_duct_id attached
+      pt_per_ft    — calibrated points-per-foot
+      scale_source — "explicit" (read from drawing) or "derived" (empirical)
+      scale_text   — the matched scale string, or "derived" if empirical
+      label_count  — total distinct labels parsed
+      labels       — list of label dicts, each with nearest_duct_id attached
 
     Optionally writes JSON to output_path.
     """
     labels = extract_labels(pdf_path, page_index)
     length_labels = [l for l in labels if l["type"] == "length"]
 
-    pt_per_ft = _calibrate_scale(length_labels, segments)
+    # Stage 1 — try to read the explicit scale from the drawing
+    doc = fitz.open(pdf_path)
+    explicit_pt_per_ft, scale_matched_text = _find_explicit_scale(doc[page_index])
+    doc.close()
+
+    if explicit_pt_per_ft is not None:
+        pt_per_ft   = explicit_pt_per_ft
+        scale_source = "explicit"
+        scale_text   = scale_matched_text
+    else:
+        pt_per_ft   = _calibrate_scale(length_labels, segments)
+        scale_source = "derived"
+        scale_text   = "derived"
+
     associated = _associate_labels(labels, segments)
 
     result = {
         "pdf": str(pdf_path),
         "page": page_index,
         "pt_per_ft": round(pt_per_ft, 4),
-        "scale_text": "derived",
+        "scale_source": scale_source,
+        "scale_text": scale_text,
         "label_count": len(labels),
         "labels": associated,
     }

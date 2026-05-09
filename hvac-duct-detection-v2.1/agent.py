@@ -60,6 +60,8 @@ def _tool_extract_labels_and_scale(state: PipelineState, inp: dict) -> dict:
     labels = result["labels"]
     return {
         "pt_per_ft": round(result["pt_per_ft"], 4),
+        "scale_source": result.get("scale_source", "derived"),
+        "scale_text": result.get("scale_text", "derived"),
         "length_labels": sum(1 for l in labels if l["type"] == "length"),
         "cross_section_labels": sum(1 for l in labels if l["type"] == "cross_section"),
         "duct_id_labels": sum(1 for l in labels if l["type"] == "duct_id"),
