@@ -47,6 +47,8 @@ analysis_sessions: dict[str, dict] = {}
 # ── Duct metadata helpers ─────────────────────────────────────────────────────
 
 def _infer_duct_type(duct) -> str:
+    if duct.duct_type:
+        return duct.duct_type.lower()
     lid = (duct.duct_label_id or "").upper()
     if any(lid.startswith(p) for p in ("SA", "SUP", "S-", "SB")):
         return "supply"
@@ -54,13 +56,15 @@ def _infer_duct_type(duct) -> str:
         return "return"
     if any(lid.startswith(p) for p in ("EA", "EXH", "EF", "E-", "OA")):
         return "exhaust"
-    return "supply"
+    return "unknown"
 
 
 def _infer_pressure_class(duct) -> str:
+    if duct.pressure_class:
+        return duct.pressure_class.lower()
     cs = duct.cross_section
     if not cs:
-        return "low"
+        return "unknown"
     dim = (
         cs.get("diameter_in", 0)
         if duct.is_round

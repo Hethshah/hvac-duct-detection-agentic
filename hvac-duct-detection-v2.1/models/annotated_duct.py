@@ -17,6 +17,8 @@ class AnnotatedDuct:
     source: str                       # "vector" | "raster"
     page: int
     centerline: list[list[float]] | None = field(default=None)  # [[x0,y0],[x1,y1]] media coords
+    duct_type: str | None = field(default=None)      # "supply" | "return" | "exhaust" — set by agent
+    pressure_class: str | None = field(default=None) # "low" | "medium" | "high" — set by agent
 
     def to_dict(self) -> dict:
         return {
@@ -33,4 +35,6 @@ class AnnotatedDuct:
             "confidence": round(self.confidence, 3),
             "source": self.source,
             "page": self.page,
+            "duct_type": self.duct_type,
+            "pressure_class": self.pressure_class,
         }

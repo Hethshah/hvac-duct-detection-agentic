@@ -144,6 +144,8 @@ def _tool_update_duct_assessment(state: PipelineState, inp: dict) -> dict:
 
 
 def _infer_duct_type(duct) -> str:
+    if duct.duct_type:
+        return duct.duct_type.capitalize()
     lid = (duct.duct_label_id or "").upper()
     if any(lid.startswith(p) for p in ("SA", "SUP", "S-", "SB")):
         return "Supply"
@@ -151,13 +153,15 @@ def _infer_duct_type(duct) -> str:
         return "Return"
     if any(lid.startswith(p) for p in ("EA", "EXH", "EF", "E-", "OA")):
         return "Exhaust"
-    return "Supply"
+    return "Unknown"
 
 
 def _pressure_class(duct) -> str:
+    if duct.pressure_class:
+        return duct.pressure_class.capitalize()
     cs = duct.cross_section
     if not cs:
-        return "Low"
+        return "Unknown"
     dim = cs.get("diameter_in", 0) if duct.is_round else max(cs.get("width_in", 0), cs.get("height_in", 0))
     if dim >= 24:
         return "Low"
@@ -173,6 +177,31 @@ def _format_cs(duct) -> str:
     if duct.is_round:
         return f'Ø {cs["diameter_in"]}"'
     return f'{cs["width_in"]}" × {cs["height_in"]}"'
+
+
+def _tool_set_duct_classification(state: PipelineState, inp: dict) -> dict:
+    """Batch-capable: accepts segment_ids (list) or segment_id (single string)."""
+    duct_type = inp["duct_type"].lower()
+    pressure = inp["pressure_class"].lower()
+
+    ids = inp.get("segment_ids") or ([inp["segment_id"]] if "segment_id" in inp else [])
+    if not ids:
+        return {"error": "Provide segment_id or segment_ids"}
+
+    updated = []
+    for sid in ids:
+        duct = next((d for d in state.annotated if d.segment_id == sid), None)
+        if duct:
+            duct.duct_type = duct_type
+            duct.pressure_class = pressure
+            updated.append(sid)
+
+    return {
+        "updated": len(updated),
+        "duct_type": duct_type,
+        "pressure_class": pressure,
+        "segment_ids": updated,
+    }
 
 
 def _generate_html_report(state: PipelineState, out_dir: Path, stem: str, png_path: str) -> str:
@@ -392,6 +421,7 @@ TOOL_MAP = {
     "annotate_segments": _tool_annotate_segments,
     "inspect_duct": _tool_inspect_duct,
     "update_duct_assessment": _tool_update_duct_assessment,
+    "set_duct_classification": _tool_set_duct_classification,
     "render_output": _tool_render_output,
 }
 
@@ -477,6 +507,42 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "set_duct_classification",
+        "description": (
+            "Record duct type (supply/return/exhaust) and pressure class (low/medium/high) "
+            "for one or many duct segments. Use segment_ids list to batch-classify ducts of the same type."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "segment_id": {
+                    "type": "string",
+                    "description": "Single segment ID to classify.",
+                },
+                "segment_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Multiple segment IDs to classify with the same type and pressure.",
+                },
+                "duct_type": {
+                    "type": "string",
+                    "enum": ["supply", "return", "exhaust"],
+                    "description": "Duct function: supply (delivers conditioned air), return (recirculates), exhaust (vents out).",
+                },
+                "pressure_class": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high"],
+                    "description": "Low: largest dim ≥24\", Medium: 12–24\", High: <12\". Use cross_section from annotate_segments.",
+                },
+                "reasoning": {
+                    "type": "string",
+                    "description": "Brief explanation of why this classification was chosen.",
+                },
+            },
+            "required": ["duct_type", "pressure_class"],
+        },
+    },
+    {
         "name": "render_output",
         "description": "Render the annotated PNG and save summary JSON. Must be called last.",
         "input_schema": {
@@ -487,7 +553,7 @@ TOOL_DEFINITIONS = [
     },
 ]
 
-SYSTEM_PROMPT = """You are an HVAC duct detection agent. Analyze a mechanical floor plan PDF and produce a complete inventory of all duct segments with physical dimensions.
+SYSTEM_PROMPT = """You are an HVAC duct detection agent. Analyze a mechanical floor plan PDF and produce a complete inventory of all duct segments with physical dimensions, types, and pressure classes.
 
 All measurements come from deterministic tools. Never guess coordinates or dimensions.
 
@@ -496,11 +562,22 @@ Workflow:
 2. extract_labels_and_scale — parse dimension text, calibrate pt/ft scale
 3. detect_raster_ducts — OpenCV fallback for ducts outside the vector layer
 4. annotate_segments — associate labels with ducts, compute physical lengths
-5. For each segment in mismatch_ids or unlabeled_ids: call inspect_duct to visually examine it
-6. Call update_duct_assessment if inspection changes your confidence in a duct
-7. Call render_output to finalize
+5. Classify every duct using set_duct_classification:
+   - Group ducts by label pattern and classify in batches using segment_ids
+   - Label conventions: SA/SUP/SB = supply, RA/RET/RB = return, EA/EXH/EF/OA = exhaust
+   - Numeric or ambiguous labels (C01, 001, etc.): call inspect_duct first, then classify
+     based on airflow arrows, text annotations, proximity to AHU/VAV boxes, or routing context
+   - Pressure class from cross_section: largest dim ≥24" = low, 12–24" = medium, <12" = high
+   - When cross_section is missing, use inspect_duct to read dimension text from the crop
+   - Every duct must receive a classification — do not skip any
+6. For mismatched or unlabeled ducts not yet inspected: call inspect_duct and update_duct_assessment
+7. Call render_output last
 
-When inspecting: a mismatch (>15% measured vs label) may be caused by a wrong label match, a segment split, or a CAD annotation error. Set confidence 0.85–1.0 if the duct looks valid, 0.1–0.3 if it looks like a fitting or non-duct geometry.
+Classification tips:
+- Supply ducts are typically the main trunk and branch ducts distributing conditioned air
+- Return ducts are usually wider, lower-pressure paths back to the air handler
+- Exhaust ducts connect to fans, toilet rooms, or exterior louvers
+- On unlabeled segments, check if the duct is connected to a labeled trunk of known type
 
 Always call render_output as the final step."""
 
