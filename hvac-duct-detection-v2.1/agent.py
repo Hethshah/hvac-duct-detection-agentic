@@ -1,5 +1,6 @@
 """HVAC Duct Detection — Agentic Pipeline (v2.1)"""
 import base64
+import datetime
 import json
 import sys
 from dataclasses import dataclass, field
@@ -38,6 +39,7 @@ class PipelineState:
     annotated: list = field(default_factory=list)
     output_dir: Path | None = None
     outputs: dict = field(default_factory=dict)
+    event_log: list = field(default_factory=list)  # captured for HTML report
 
 
 # ── Tool implementations ──────────────────────────────────────────────────────
@@ -141,6 +143,209 @@ def _tool_update_duct_assessment(state: PipelineState, inp: dict) -> dict:
     }
 
 
+def _infer_duct_type(duct) -> str:
+    lid = (duct.duct_label_id or "").upper()
+    if any(lid.startswith(p) for p in ("SA", "SUP", "S-", "SB")):
+        return "Supply"
+    if any(lid.startswith(p) for p in ("RA", "RET", "R-", "RB")):
+        return "Return"
+    if any(lid.startswith(p) for p in ("EA", "EXH", "EF", "E-", "OA")):
+        return "Exhaust"
+    return "Supply"
+
+
+def _pressure_class(duct) -> str:
+    cs = duct.cross_section
+    if not cs:
+        return "Low"
+    dim = cs.get("diameter_in", 0) if duct.is_round else max(cs.get("width_in", 0), cs.get("height_in", 0))
+    if dim >= 24:
+        return "Low"
+    if dim >= 12:
+        return "Medium"
+    return "High"
+
+
+def _format_cs(duct) -> str:
+    cs = duct.cross_section
+    if not cs:
+        return "—"
+    if duct.is_round:
+        return f'Ø {cs["diameter_in"]}"'
+    return f'{cs["width_in"]}" × {cs["height_in"]}"'
+
+
+def _generate_html_report(state: PipelineState, out_dir: Path, stem: str, png_path: str) -> str:
+    ducts = state.annotated
+    generated_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    # Embed annotated PNG as base64 so the file is self-contained
+    try:
+        img_b64 = base64.b64encode(Path(png_path).read_bytes()).decode()
+        img_tag = f'<img src="data:image/png;base64,{img_b64}" style="max-width:100%;border-radius:6px;border:1px solid #e2e8f0">'
+    except Exception:
+        img_tag = "<p><em>Annotated image not available.</em></p>"
+
+    # Stats
+    total    = len(ducts)
+    labeled  = sum(1 for d in ducts if not d.unlabeled)
+    mismatch = sum(1 for d in ducts if d.length_mismatch)
+    unlabeled = sum(1 for d in ducts if d.unlabeled)
+    vector_n = len(state.vector_segs)
+    raster_n = len(state.raster_segs)
+
+    stat_cards = f"""
+    <div class="stats">
+      <div class="card"><span class="num">{total}</span><span class="lbl">Total Ducts</span></div>
+      <div class="card"><span class="num">{labeled}</span><span class="lbl">Labeled</span></div>
+      <div class="card warn"><span class="num">{mismatch}</span><span class="lbl">Mismatches</span></div>
+      <div class="card muted"><span class="num">{unlabeled}</span><span class="lbl">Unlabeled</span></div>
+      <div class="card"><span class="num">{vector_n}</span><span class="lbl">Vector Segments</span></div>
+      <div class="card"><span class="num">{raster_n}</span><span class="lbl">Raster Segments</span></div>
+      <div class="card"><span class="num">{state.pt_per_ft:.2f}</span><span class="lbl">pt / ft Scale</span></div>
+    </div>"""
+
+    # Duct table rows
+    rows = []
+    for i, d in enumerate(ducts, 1):
+        mismatch_cls = ' class="mismatch-row"' if d.length_mismatch else ""
+        label_len = f"{d.length_ft_label:.2f}" if d.length_ft_label is not None else "—"
+        match_cell = '<span class="badge warn">Mismatch</span>' if d.length_mismatch else '<span class="badge ok">OK</span>'
+        unlabeled_badge = ' <span class="badge muted">Unlabeled</span>' if d.unlabeled else ""
+        rows.append(f"""<tr{mismatch_cls}>
+          <td>{i}</td>
+          <td>{d.duct_label_id or "—"}{unlabeled_badge}</td>
+          <td>{_infer_duct_type(d)}</td>
+          <td>{d.orientation}</td>
+          <td>{_format_cs(d)}</td>
+          <td>{d.length_ft_measured:.2f} ft</td>
+          <td>{label_len}</td>
+          <td>{match_cell}</td>
+          <td>{_pressure_class(d)}</td>
+          <td>{d.source}</td>
+          <td>{d.confidence:.2f}</td>
+        </tr>""")
+    table_body = "\n".join(rows)
+
+    # Agent log
+    log_items = []
+    tool_labels = {
+        "extract_vector_ducts":    "Extract vector ducts",
+        "extract_labels_and_scale": "Parse labels & calibrate scale",
+        "detect_raster_ducts":     "Raster fallback detection",
+        "annotate_segments":       "Annotate segments",
+        "inspect_duct":            "Visual inspection",
+        "update_duct_assessment":  "Update assessment",
+        "render_output":           "Render output",
+    }
+    i = 0
+    log_events = state.event_log
+    while i < len(log_events):
+        ev = log_events[i]
+        if ev["type"] == "tool_call":
+            tool = ev["data"].get("tool", "")
+            label = tool_labels.get(tool, tool)
+            extra = ""
+            if tool == "inspect_duct":
+                extra = f' — {ev["data"].get("input", {}).get("segment_id", "")}'
+            elif tool == "update_duct_assessment":
+                inp = ev["data"].get("input", {})
+                extra = f' — {inp.get("segment_id", "")} → confidence {inp.get("confidence", "?")}'
+            # Look ahead for result
+            result_summary = ""
+            if i + 1 < len(log_events) and log_events[i + 1]["type"] == "tool_result":
+                r = log_events[i + 1]["data"].get("result", {})
+                parts = []
+                for k in ("segment_count", "total_ducts", "new_segments", "pt_per_ft", "duct_count"):
+                    if k in r:
+                        parts.append(f"{k.replace('_', ' ')}: <strong>{r[k]}</strong>")
+                result_summary = f'<div class="result-line">{" · ".join(parts)}</div>' if parts else ""
+                i += 1
+            log_items.append(f'<div class="log-tool"><span class="tool-icon">⚙</span> <strong>{label}</strong>{extra}{result_summary}</div>')
+        elif ev["type"] == "agent_text":
+            text = ev["data"].get("text", "").strip()
+            if text:
+                log_items.append(f'<div class="log-agent"><span class="tool-icon">🤖</span> {text}</div>')
+        i += 1
+    agent_log_html = "\n".join(log_items) if log_items else "<p><em>No agent log captured.</em></p>"
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HVAC Duct Detection Report — {stem}</title>
+<style>
+  *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ font-family: system-ui, -apple-system, sans-serif; background: #f8fafc; color: #1e293b; line-height: 1.6; }}
+  .page {{ max-width: 1200px; margin: 0 auto; padding: 2rem; }}
+  h1 {{ font-size: 1.75rem; font-weight: 700; color: #0f172a; }}
+  h2 {{ font-size: 1.2rem; font-weight: 600; color: #1e293b; margin: 2rem 0 1rem; border-bottom: 2px solid #e2e8f0; padding-bottom: .4rem; }}
+  .meta {{ color: #64748b; font-size: .875rem; margin-top: .25rem; }}
+  .stats {{ display: flex; flex-wrap: wrap; gap: .75rem; margin: 1.5rem 0; }}
+  .card {{ background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: .75rem 1.25rem; display: flex; flex-direction: column; align-items: center; min-width: 110px; }}
+  .card.warn {{ border-color: #fbbf24; background: #fffbeb; }}
+  .card.muted {{ border-color: #cbd5e1; background: #f8fafc; }}
+  .num {{ font-size: 1.6rem; font-weight: 700; color: #3762E3; }}
+  .card.warn .num {{ color: #d97706; }}
+  .card.muted .num {{ color: #94a3b8; }}
+  .lbl {{ font-size: .75rem; color: #64748b; text-transform: uppercase; letter-spacing: .04em; }}
+  .drawing {{ margin: 1rem 0; }}
+  table {{ width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; border: 1px solid #e2e8f0; font-size: .875rem; }}
+  th {{ background: #f1f5f9; text-align: left; padding: .6rem .75rem; font-weight: 600; color: #475569; border-bottom: 1px solid #e2e8f0; }}
+  td {{ padding: .55rem .75rem; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }}
+  tr:last-child td {{ border-bottom: none; }}
+  tr.mismatch-row {{ background: #fffbeb; }}
+  .badge {{ display: inline-block; font-size: .7rem; font-weight: 600; padding: .15em .5em; border-radius: 4px; }}
+  .badge.ok {{ background: #dcfce7; color: #15803d; }}
+  .badge.warn {{ background: #fef9c3; color: #a16207; }}
+  .badge.muted {{ background: #f1f5f9; color: #64748b; }}
+  .log-tool {{ background: #fff; border: 1px solid #e2e8f0; border-radius: 6px; padding: .6rem .9rem; margin: .4rem 0; }}
+  .log-agent {{ background: #f0f9ff; border-left: 3px solid #3762E3; padding: .6rem .9rem; margin: .4rem 0; font-style: italic; color: #334155; border-radius: 0 6px 6px 0; }}
+  .result-line {{ font-size: .8rem; color: #64748b; margin-top: .2rem; }}
+  .tool-icon {{ margin-right: .4rem; }}
+  footer {{ margin-top: 3rem; font-size: .8rem; color: #94a3b8; text-align: center; }}
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>HVAC Duct Detection Report</h1>
+  <p class="meta">Input: <strong>{Path(state.pdf_path).name}</strong> &nbsp;|&nbsp; Generated: {generated_at} &nbsp;|&nbsp; Scale: {state.pt_per_ft:.2f} pt/ft</p>
+
+  {stat_cards}
+
+  <h2>Annotated Floor Plan</h2>
+  <div class="drawing">{img_tag}</div>
+
+  <h2>Duct Inventory ({total} ducts)</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th><th>Duct ID</th><th>Type</th><th>Dir</th>
+        <th>Dimensions</th><th>Measured</th><th>Label</th>
+        <th>Match</th><th>Pressure</th><th>Source</th><th>Conf.</th>
+      </tr>
+    </thead>
+    <tbody>
+{table_body}
+    </tbody>
+  </table>
+
+  <h2>Agent Analysis Log</h2>
+  <div class="agent-log">
+{agent_log_html}
+  </div>
+
+  <footer>Generated by HVAC Duct Detection v2.1 (Agentic)</footer>
+</div>
+</body>
+</html>"""
+
+    report_path = str(out_dir / f"{stem}_report.html")
+    Path(report_path).write_text(html, encoding="utf-8")
+    return report_path
+
+
 def _tool_render_output(state: PipelineState, inp: dict) -> dict:
     stem = Path(state.pdf_path).stem
     out_dir = state.output_dir if state.output_dir is not None else OUTPUTS_DIR / stem
@@ -163,10 +368,17 @@ def _tool_render_output(state: PipelineState, inp: dict) -> dict:
     summary_path = str(out_dir / "summary.json")
     Path(summary_path).write_text(json.dumps(summary, indent=2))
 
-    state.outputs = {"png_path": png_path, "summary_path": summary_path}
+    report_path = _generate_html_report(state, out_dir, stem, png_path)
+
+    state.outputs = {
+        "png_path": png_path,
+        "summary_path": summary_path,
+        "report_path": report_path,
+    }
     return {
         "png_path": png_path,
         "summary_path": summary_path,
+        "report_path": report_path,
         "duct_count": len(state.annotated),
     }
 
@@ -317,6 +529,7 @@ def run_agent(
     state = PipelineState(pdf_path=str(pdf_path), output_dir=output_dir)
 
     def emit(t, d):
+        state.event_log.append({"type": t, "data": d})
         if on_event:
             on_event(t, d)
 
