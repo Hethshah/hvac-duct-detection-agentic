@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HVAC Duct Inspector — Agentic</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --blue:    #3762E3;
+  --blue-lt: #EEF2FF;
+  --supply:  #3762E3;
+  --return:  #D97706;
+  --exhaust: #059669;
+  --low:     #059669;
+  --medium:  #D97706;
+  --high:    #DC2626;
+  --bg:      #F3F4F6;
+  --surface: #FFFFFF;
+  --border:  #E5E7EB;
+  --text:    #111827;
+  --muted:   #6B7280;
+  --radius:  10px;
+  --shadow:  0 4px 24px rgba(0,0,0,0.10);
+}
+
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
+
+.view { position: fixed; inset: 0; display: none; }
+
+/* ── Upload ── */
+#upload-view { flex-direction: column; align-items: center; justify-content: center; background: linear-gradient(135deg,#EEF2FF,#F3F4F6); }
+
+.brand { display: flex; align-items: center; gap: 10px; margin-bottom: 28px; }
+.brand-icon { width: 46px; height: 46px; background: var(--blue); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 22px; }
+.brand-name { font-size: 20px; font-weight: 700; }
+
+.upload-card { background: var(--surface); border-radius: 20px; box-shadow: var(--shadow); padding: 44px 52px; width: 500px; text-align: center; }
+.upload-card h1 { font-size: 24px; font-weight: 700; margin-bottom: 8px; }
+.upload-card p  { color: var(--muted); font-size: 14px; margin-bottom: 28px; line-height: 1.6; }
+
+.drop-zone { border: 2px dashed var(--border); border-radius: var(--radius); padding: 32px 20px; cursor: pointer; transition: border-color .2s, background .2s; margin-bottom: 18px; }
+.drop-zone:hover, .drop-zone.drag-over { border-color: var(--blue); background: var(--blue-lt); }
+.drop-zone .dz-icon { font-size: 36px; margin-bottom: 10px; }
+.drop-zone .dz-text { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.drop-zone .dz-sub  { font-size: 12px; color: var(--muted); }
+
+.btn-primary { width: 100%; padding: 13px; background: var(--blue); color: #fff; border: none; border-radius: var(--radius); font-size: 14px; font-weight: 600; cursor: pointer; transition: background .15s, opacity .15s; }
+.btn-primary:hover:not(:disabled) { background: #2B4FBF; }
+.btn-primary:disabled { opacity: .4; cursor: not-allowed; }
+
+/* ── Analyzing / Result (shared layout) ── */
+#analyzing-view { flex-direction: column; }
+#result-view    { flex-direction: column; }
+
+/* shared header */
+.app-header { height: 52px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 18px; gap: 14px; flex-shrink: 0; }
+.h-brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; white-space: nowrap; }
+.h-brand-icon { width: 30px; height: 30px; background: var(--blue); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 15px; }
+.h-stats { color: var(--muted); font-size: 12px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.h-actions { display: flex; gap: 8px; }
+.btn-sm { padding: 6px 13px; border-radius: 7px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.btn-ghost { background: transparent; color: var(--blue); border: 1.5px solid var(--blue); }
+.btn-ghost:hover { background: var(--blue-lt); }
+.btn-dl { background: var(--blue); color: #fff; border: none; }
+.btn-dl:hover { background: #2B4FBF; }
+
+/* running indicator */
+.running-dot { width: 8px; height: 8px; border-radius: 50%; background: #F59E0B; animation: pulse 1.2s ease-in-out infinite; flex-shrink: 0; }
+@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.3; } }
+.running-label { font-size: 12px; color: #92400E; font-weight: 600; }
+
+/* ── Three-column layout for analyzing/result ── */
+.app-body { display: grid; grid-template-columns: 320px 1fr 290px; flex: 1; overflow: hidden; min-height: 0; }
+
+/* ── Agent log panel ── */
+.agent-panel { background: #0F172A; display: flex; flex-direction: column; overflow: hidden; border-right: 1px solid #1E293B; }
+.agent-panel-header { padding: 12px 14px; border-bottom: 1px solid #1E293B; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.agent-panel-header h3 { font-size: 12px; font-weight: 700; color: #94A3B8; text-transform: uppercase; letter-spacing: .5px; flex: 1; }
+.agent-log { overflow-y: auto; flex: 1; padding: 8px; display: flex; flex-direction: column; gap: 4px; }
+.agent-log::-webkit-scrollbar { width: 4px; }
+.agent-log::-webkit-scrollbar-track { background: transparent; }
+.agent-log::-webkit-scrollbar-thumb { background: #334155; border-radius: 2px; }
+
+/* log entries */
+.log-entry { border-radius: 6px; padding: 7px 10px; font-size: 11px; font-family: "SF Mono", "Fira Code", monospace; }
+.log-tool-call { background: #1E293B; color: #7DD3FC; display: flex; align-items: center; gap: 7px; }
+.log-tool-call .spinner-sm { width: 12px; height: 12px; border: 2px solid #334155; border-top-color: #7DD3FC; border-radius: 50%; animation: spin .7s linear infinite; flex-shrink: 0; }
+.log-tool-call .check { color: #4ADE80; font-size: 12px; flex-shrink: 0; }
+.log-tool-call .tool-name { font-weight: 600; }
+.log-tool-result { color: #64748B; padding-left: 29px; font-size: 10.5px; }
+.log-agent-text { background: #1E293B; border-left: 2px solid #7C3AED; padding: 8px 10px; color: #C4B5FD; font-style: italic; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 11px; line-height: 1.5; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Drawing panel ── */
+.drawing-panel { display: flex; flex-direction: column; overflow: hidden; }
+.toolbar { height: 38px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 14px; gap: 10px; font-size: 12px; color: var(--muted); flex-shrink: 0; }
+.zoom-group { display: flex; align-items: center; gap: 6px; }
+.zoom-group strong { color: var(--text); min-width: 40px; }
+.tool-btn { padding: 2px 9px; background: var(--bg); border: 1px solid var(--border); border-radius: 5px; font-size: 12px; cursor: pointer; }
+.tool-btn:hover { background: var(--border); }
+.toolbar-sep { color: var(--border); }
+
+.viewport { flex: 1; overflow: hidden; cursor: grab; background: #C8CDD6; position: relative; }
+.viewport:active { cursor: grabbing; }
+.canvas-wrap { transform-origin: 0 0; display: inline-block; position: relative; line-height: 0; }
+.canvas-wrap img { display: block; }
+.canvas-wrap svg { position: absolute; top: 0; left: 0; pointer-events: all; }
+
+/* placeholder when analyzing */
+.drawing-placeholder { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #C8CDD6; gap: 16px; }
+.placeholder-spinner { width: 48px; height: 48px; border: 4px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: spin .8s linear infinite; }
+.placeholder-text { color: rgba(255,255,255,.8); font-size: 14px; font-weight: 500; }
+
+/* ── List panel ── */
+.list-panel { background: var(--surface); border-left: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+.list-header { padding: 12px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.list-header h3 { font-size: 13px; font-weight: 700; flex: 1; }
+.count-badge { background: var(--blue); color: #fff; font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 20px; }
+
+.list-search { padding: 8px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.list-search input { width: 100%; padding: 6px 10px; border: 1px solid var(--border); border-radius: 7px; font-size: 12px; outline: none; background: var(--bg); }
+.list-search input:focus { border-color: var(--blue); background: var(--surface); }
+
+.duct-list { overflow-y: auto; flex: 1; }
+.duct-list-empty { display: flex; align-items: center; justify-content: center; height: 100px; color: var(--muted); font-size: 12px; }
+
+.duct-card { padding: 10px 12px; border-bottom: 1px solid #F9FAFB; cursor: pointer; border-left: 3px solid transparent; transition: background .1s; }
+.duct-card:hover    { background: #F9FAFB; }
+.duct-card.selected { background: var(--blue-lt); border-left-color: var(--blue); }
+.duct-card.hl       { background: #FFF8E7; border-left-color: var(--medium); }
+
+.dc-top { display: flex; align-items: center; gap: 5px; margin-bottom: 4px; }
+.dc-num  { font-size: 11px; font-weight: 700; color: var(--muted); min-width: 24px; }
+.dc-type { font-size: 12px; font-weight: 600; flex: 1; }
+.pres-pill { font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 20px; color: #fff; text-transform: uppercase; letter-spacing: .3px; }
+.dc-bot { display: flex; gap: 10px; font-size: 11px; color: var(--muted); padding-left: 24px; }
+
+/* ── Legend ── */
+.legend { padding: 10px 12px; border-top: 1px solid var(--border); flex-shrink: 0; }
+.legend-section { margin-bottom: 8px; }
+.legend-section:last-child { margin-bottom: 0; }
+.legend-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); margin-bottom: 5px; }
+.legend-row { display: flex; flex-wrap: wrap; gap: 6px 12px; }
+.legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; }
+.legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+/* ── Tooltip ── */
+.tooltip { position: fixed; z-index: 9999; background: var(--surface); border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.18); min-width: 220px; pointer-events: none; overflow: hidden; display: none; }
+.tt-header { padding: 11px 14px 9px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); }
+.tt-title { font-size: 13px; font-weight: 700; }
+.tt-badge { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 20px; color: #fff; }
+.tt-body { padding: 8px 14px 12px; }
+.tt-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 12px; }
+.tt-row + .tt-row { border-top: 1px solid #F9FAFB; }
+.tt-key { color: var(--muted); }
+.tt-val { font-weight: 600; }
+.tt-supply  { color: var(--supply); }
+.tt-return  { color: var(--return); }
+.tt-exhaust { color: var(--exhaust); }
+
+/* ── Error toast ── */
+.toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #DC2626; color: #fff; padding: 10px 20px; border-radius: 8px; font-size: 13px; font-weight: 600; z-index: 9999; display: none; box-shadow: var(--shadow); }
+</style>
+</head>
+<body>
+
+<!-- ── Upload ── -->
+<div class="view" id="upload-view">
+  <div class="brand">
+    <div class="brand-icon">🌬️</div>
+    <span class="brand-name">HVAC Duct Inspector — Agentic</span>
+  </div>
+  <div class="upload-card">
+    <h1>Detect &amp; Annotate Ducts</h1>
+    <p>Upload a mechanical floor plan PDF. An AI agent orchestrates the detection pipeline, inspects ambiguous segments visually, and produces an interactive annotated drawing.</p>
+    <div class="drop-zone" id="drop-zone">
+      <div class="dz-icon">📄</div>
+      <div class="dz-text" id="dz-text">Drop your PDF here</div>
+      <div class="dz-sub">or click to browse · PDF only · max 64 MB</div>
+      <input type="file" id="file-input" accept=".pdf" hidden>
+    </div>
+    <button class="btn-primary" id="analyze-btn" disabled>Analyze Drawing</button>
+  </div>
+</div>
+
+<!-- ── Analyzing ── -->
+<div class="view" id="analyzing-view">
+  <div class="app-header">
+    <div class="h-brand"><div class="h-brand-icon">🌬️</div>HVAC Duct Inspector</div>
+    <div class="running-dot"></div>
+    <span class="running-label">Agent running…</span>
+    <div class="h-stats" id="a-stats"></div>
+  </div>
+  <div class="app-body">
+    <!-- Agent log -->
+    <div class="agent-panel">
+      <div class="agent-panel-header">
+        <h3>Agent Log</h3>
+      </div>
+      <div class="agent-log" id="agent-log-a"></div>
+    </div>
+
+    <!-- Drawing placeholder -->
+    <div class="drawing-panel">
+      <div class="toolbar">
+        <span style="color:var(--muted)">Waiting for pipeline to complete…</span>
+      </div>
+      <div class="drawing-placeholder">
+        <div class="placeholder-spinner"></div>
+        <div class="placeholder-text">Running pipeline…</div>
+      </div>
+    </div>
+
+    <!-- Duct list (empty while analyzing) -->
+    <div class="list-panel">
+      <div class="list-header">
+        <h3>Detected Ducts</h3>
+        <span class="count-badge" id="a-count-badge">—</span>
+      </div>
+      <div class="list-search">
+        <input type="text" placeholder="Filter…" disabled>
+      </div>
+      <div class="duct-list">
+        <div class="duct-list-empty">Results will appear when done</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Result ── -->
+<div class="view" id="result-view">
+  <div class="app-header">
+    <div class="h-brand"><div class="h-brand-icon">🌬️</div>HVAC Duct Inspector</div>
+    <div class="h-stats" id="h-stats"></div>
+    <div class="h-actions">
+      <a id="dl-png" href="#" download="annotated.png"><button class="btn-sm btn-dl">⬇ PNG</button></a>
+      <a id="dl-pdf" href="#" download="annotated.pdf"><button class="btn-sm btn-dl">⬇ PDF</button></a>
+      <button class="btn-sm btn-ghost" onclick="resetApp()">New Analysis</button>
+    </div>
+  </div>
+
+  <div class="app-body">
+    <!-- Agent log (read-only) -->
+    <div class="agent-panel">
+      <div class="agent-panel-header">
+        <h3>Agent Log</h3>
+        <span style="font-size:10px;color:#4ADE80;font-weight:600;">Done</span>
+      </div>
+      <div class="agent-log" id="agent-log-r"></div>
+    </div>
+
+    <!-- Drawing -->
+    <div class="drawing-panel">
+      <div class="toolbar">
+        <div class="zoom-group">
+          Zoom <strong id="zoom-label">100%</strong>
+          <button class="tool-btn" onclick="adjustZoom(1.2)">＋</button>
+          <button class="tool-btn" onclick="adjustZoom(1/1.2)">－</button>
+          <button class="tool-btn" onclick="fitZoom()">Fit</button>
+        </div>
+        <span class="toolbar-sep">|</span>
+        <span>Scroll to zoom · Drag to pan · Hover annotation for details</span>
+      </div>
+      <div class="viewport" id="viewport">
+        <div class="canvas-wrap" id="canvas-wrap">
+          <img id="plan-img" alt="Annotated HVAC plan">
+          <svg id="svg-overlay" xmlns="http://www.w3.org/2000/svg"></svg>
+        </div>
+      </div>
+    </div>
+
+    <!-- Duct list -->
+    <div class="list-panel">
+      <div class="list-header">
+        <h3>Detected Ducts</h3>
+        <span class="count-badge" id="count-badge">0</span>
+      </div>
+      <div class="list-search">
+        <input type="text" id="search-input" placeholder="Filter…" oninput="filterList(this.value)">
+      </div>
+      <div class="duct-list" id="duct-list"></div>
+      <div class="legend">
+        <div class="legend-section">
+          <div class="legend-title">Duct Type</div>
+          <div class="legend-row">
+            <div class="legend-item"><div class="legend-dot" style="background:var(--supply)"></div>Supply</div>
+            <div class="legend-item"><div class="legend-dot" style="background:var(--return)"></div>Return</div>
+            <div class="legend-item"><div class="legend-dot" style="background:var(--exhaust)"></div>Exhaust</div>
+          </div>
+        </div>
+        <div class="legend-section">
+          <div class="legend-title">Pressure Class</div>
+          <div class="legend-row">
+            <div class="legend-item"><div class="legend-dot" style="background:var(--low)"></div>Low</div>
+            <div class="legend-item"><div class="legend-dot" style="background:var(--medium)"></div>Medium</div>
+            <div class="legend-item"><div class="legend-dot" style="background:var(--high)"></div>High</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Tooltip -->
+<div class="tooltip" id="tooltip">
+  <div class="tt-header">
+    <span class="tt-title" id="tt-title"></span>
+    <span class="tt-badge" id="tt-badge"></span>
+  </div>
+  <div class="tt-body" id="tt-body"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ── Constants ─────────────────────────────────────────────────────────────────
+const TYPE_COLOR = { supply:'#3762E3', return:'#D97706', exhaust:'#059669' };
+const PRES_COLOR = { low:'#059669', medium:'#D97706', high:'#DC2626', unknown:'#6B7280' };
+const TYPE_LABEL = { supply:'Supply Air', return:'Return Air', exhaust:'Exhaust Air' };
+
+const TOOL_LABELS = {
+  extract_vector_ducts:    'Extract vector ducts',
+  extract_labels_and_scale:'Parse labels & calibrate scale',
+  detect_raster_ducts:     'Raster fallback detection',
+  annotate_segments:       'Annotate segments',
+  inspect_duct:            'Visual inspection',
+  update_duct_assessment:  'Update assessment',
+  render_output:           'Render output',
+};
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let ducts = [], sessionId = null;
+let zoom = 1, panX = 0, panY = 0;
+let panning = false, px0, py0, pxS, pyS;
+let selectedIdx = null;
+// Map tool_use call id → DOM entry id
+let pendingTools = {};
+let logEntryCount = 0;
+
+// ── DOM ───────────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const dropZone   = $('drop-zone');
+const fileInput  = $('file-input');
+const analyzeBtn = $('analyze-btn');
+const overlay    = $('svg-overlay');
+const tooltip    = $('tooltip');
+const viewport   = $('viewport');
+const canvasWrap = $('canvas-wrap');
+const planImg    = $('plan-img');
+
+// ── Upload ────────────────────────────────────────────────────────────────────
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('drag-over');
+  const f = e.dataTransfer.files[0];
+  if (f && f.name.toLowerCase().endsWith('.pdf')) setFile(f);
+  else showToast('Please drop a PDF file');
+});
+fileInput.addEventListener('change', e => { if (e.target.files[0]) setFile(e.target.files[0]); });
+
+let selectedFile = null;
+function setFile(f) {
+  selectedFile = f;
+  $('dz-text').textContent = f.name;
+  analyzeBtn.disabled = false;
+}
+
+// ── Analyze ───────────────────────────────────────────────────────────────────
+analyzeBtn.addEventListener('click', async () => {
+  if (!selectedFile) return;
+  showView('analyzing');
+
+  const fd = new FormData();
+  fd.append('pdf', selectedFile);
+
+  try {
+    const resp = await fetch('/analyze', { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (!resp.ok || data.error) throw new Error(data.error || `Server error ${resp.status}`);
+    sessionId = data.session_id;
+    openStream(data.session_id);
+  } catch (err) {
+    showToast('Analysis failed: ' + err.message);
+    showView('upload');
+  }
+});
+
+// ── SSE stream ────────────────────────────────────────────────────────────────
+let eventSource = null;
+
+function openStream(sid) {
+  eventSource = new EventSource(`/session/${sid}/stream`);
+
+  eventSource.addEventListener('tool_call', e => {
+    const data = JSON.parse(e.data);
+    appendToolCall(data.tool, data.input);
+  });
+
+  eventSource.addEventListener('tool_result', e => {
+    const data = JSON.parse(e.data);
+    resolveToolCall(data.tool, data.result);
+  });
+
+  eventSource.addEventListener('agent_text', e => {
+    const data = JSON.parse(e.data);
+    appendAgentText(data.text);
+  });
+
+  eventSource.addEventListener('done', e => {
+    const data = JSON.parse(e.data);
+    eventSource.close();
+    loadResult(data);
+  });
+
+  eventSource.addEventListener('error', e => {
+    const data = e.data ? JSON.parse(e.data) : {};
+    eventSource.close();
+    showToast('Agent error: ' + (data.error || 'unknown'));
+    showView('upload');
+  });
+}
+
+// ── Agent log helpers ─────────────────────────────────────────────────────────
+function agentLog() {
+  return $('agent-log-a');
+}
+
+function appendToolCall(tool, inp) {
+  const id = 'le-' + (++logEntryCount);
+  // Track last call for this tool name (to pair with result)
+  pendingTools[tool] = id;
+
+  const label = TOOL_LABELS[tool] || tool;
+  let detail = '';
+  if (tool === 'inspect_duct' && inp && inp.segment_id) {
+    detail = ` <span style="color:#93C5FD">${inp.segment_id}</span>`;
+  }
+
+  const el = document.createElement('div');
+  el.className = 'log-entry log-tool-call';
+  el.id = id;
+  el.innerHTML = `<div class="spinner-sm"></div><span class="tool-name">${label}</span>${detail}`;
+  agentLog().appendChild(el);
+  agentLog().scrollTop = agentLog().scrollHeight;
+}
+
+function resolveToolCall(tool, result) {
+  const id = pendingTools[tool];
+  if (!id) return;
+  const el = $(id);
+  if (!el) return;
+
+  // Replace spinner with check
+  const spinner = el.querySelector('.spinner-sm');
+  if (spinner) {
+    const check = document.createElement('span');
+    check.className = 'check';
+    check.textContent = '✓';
+    spinner.replaceWith(check);
+  }
+
+  // Append result summary
+  const summary = formatResultSummary(tool, result);
+  if (summary) {
+    const res = document.createElement('div');
+    res.className = 'log-entry log-tool-result';
+    res.textContent = summary;
+    agentLog().appendChild(res);
+  }
+  agentLog().scrollTop = agentLog().scrollHeight;
+  delete pendingTools[tool];
+}
+
+function appendAgentText(text) {
+  const el = document.createElement('div');
+  el.className = 'log-entry log-agent-text';
+  el.textContent = text;
+  agentLog().appendChild(el);
+  agentLog().scrollTop = agentLog().scrollHeight;
+}
+
+function formatResultSummary(tool, result) {
+  if (result.error) return `error: ${result.error}`;
+  if (tool === 'extract_vector_ducts') {
+    const o = result.orientations || {};
+    return `${result.segment_count} segments · H=${o.H||0} V=${o.V||0} D=${o.D||0}`;
+  }
+  if (tool === 'extract_labels_and_scale') {
+    return `pt/ft=${result.pt_per_ft} · ${result.length_labels} length · ${result.cross_section_labels} cross-section`;
+  }
+  if (tool === 'detect_raster_ducts') {
+    return `${result.new_segments} new segments · total=${result.total_segments}`;
+  }
+  if (tool === 'annotate_segments') {
+    return `${result.total_ducts} ducts · ${result.length_mismatches} mismatches · ${result.unlabeled} unlabeled`;
+  }
+  if (tool === 'inspect_duct') {
+    return `${result.segment_id} · mismatch=${result.length_mismatch} · unlabeled=${result.unlabeled}`;
+  }
+  if (tool === 'update_duct_assessment') {
+    return `${result.segment_id} → confidence=${result.confidence}`;
+  }
+  if (tool === 'render_output') {
+    return `${result.duct_count} ducts rendered`;
+  }
+  return null;
+}
+
+// ── Result ────────────────────────────────────────────────────────────────────
+function loadResult(data) {
+  ducts = data.ducts;
+
+  $('dl-png').href = data.image_url;
+  $('dl-pdf').href = data.pdf_url;
+
+  // Copy agent log to result view
+  const logA = $('agent-log-a');
+  const logR = $('agent-log-r');
+  logR.innerHTML = logA.innerHTML;
+
+  planImg.onerror = () => {
+    showToast('Image failed to load. Check server logs.');
+    showView('upload');
+  };
+  planImg.onload = () => {
+    if (!planImg.naturalWidth) { planImg.onerror(); return; }
+    setupOverlay(planImg.naturalWidth, planImg.naturalHeight);
+    buildList(ducts);
+    updateHeader(data);
+    fitZoom();
+    showView('result');
+  };
+  planImg.src = data.image_url;
+}
+
+// ── SVG overlay ───────────────────────────────────────────────────────────────
+function setupOverlay(W, H) {
+  overlay.setAttribute('width', W);
+  overlay.setAttribute('height', H);
+  overlay.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  overlay.style.width  = W + 'px';
+  overlay.style.height = H + 'px';
+  buildOverlay(ducts);
+}
+
+function buildOverlay(list) {
+  overlay.innerHTML = '';
+  list.forEach(d => {
+    const glow = svgLine(d, { stroke: TYPE_COLOR[d.duct_type] || '#3762E3', 'stroke-width': 8, 'stroke-linecap': 'round', opacity: 0 });
+    glow.id = `glow-${d.idx}`;
+
+    const hit = svgLine(d, { stroke: 'transparent', 'stroke-width': 24, 'stroke-linecap': 'round' });
+    hit.dataset.idx = d.idx;
+    hit.style.cursor = 'pointer';
+
+    hit.addEventListener('mouseenter', e => onHover(e, d));
+    hit.addEventListener('mousemove',  e => posTooltip(e.clientX, e.clientY));
+    hit.addEventListener('mouseleave', ()  => onLeave(d));
+    hit.addEventListener('click',      ()  => selectDuct(d.idx));
+
+    overlay.appendChild(glow);
+    overlay.appendChild(hit);
+  });
+}
+
+function svgLine(d, attrs) {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+  el.setAttribute('x1', d.p1[0]); el.setAttribute('y1', d.p1[1]);
+  el.setAttribute('x2', d.p2[0]); el.setAttribute('y2', d.p2[1]);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  return el;
+}
+
+function setGlow(idx, opacity) {
+  const el = $(`glow-${idx}`);
+  if (el) el.setAttribute('opacity', opacity);
+}
+
+// ── Tooltip ───────────────────────────────────────────────────────────────────
+function onHover(e, d) {
+  setGlow(d.idx, 0.65);
+  document.querySelectorAll('.duct-card').forEach(c => c.classList.remove('hl'));
+  const card = $(`dc-${d.idx}`);
+  if (card && d.idx !== selectedIdx) card.classList.add('hl');
+
+  $('tt-title').textContent = `Duct #${d.idx}`;
+  const badge = $('tt-badge');
+  badge.textContent = cap(d.duct_type);
+  badge.style.background = TYPE_COLOR[d.duct_type] || '#555';
+
+  const rows = [
+    ['Type',     TYPE_LABEL[d.duct_type] || cap(d.duct_type), d.duct_type],
+    ['Pressure', cap(d.pressure_class) + ' Pressure', ''],
+    ['Section',  cap(d.measurement_type), ''],
+    d.dimension ? ['Dimension', d.dimension, ''] : null,
+    ['Length',   d.length_ft + ' ft', ''],
+  ].filter(Boolean);
+
+  $('tt-body').innerHTML = rows.map(([k, v, cls]) =>
+    `<div class="tt-row"><span class="tt-key">${k}</span><span class="tt-val tt-${cls}">${v}</span></div>`
+  ).join('');
+
+  tooltip.style.display = 'block';
+  posTooltip(e.clientX, e.clientY);
+}
+
+function onLeave(d) {
+  if (d.idx !== selectedIdx) setGlow(d.idx, 0);
+  document.querySelectorAll('.duct-card').forEach(c => c.classList.remove('hl'));
+  tooltip.style.display = 'none';
+}
+
+function posTooltip(cx, cy) {
+  const tw = tooltip.offsetWidth, th = tooltip.offsetHeight;
+  const vw = window.innerWidth,   vh = window.innerHeight;
+  tooltip.style.left = ((cx + 18 + tw > vw) ? cx - tw - 10 : cx + 18) + 'px';
+  tooltip.style.top  = ((cy + th + 8  > vh) ? cy - th - 8  : cy + 8 ) + 'px';
+}
+
+// ── Duct list ─────────────────────────────────────────────────────────────────
+function buildList(list) {
+  $('duct-list').innerHTML = list.map(d => `
+    <div class="duct-card" id="dc-${d.idx}" onclick="selectDuct(${d.idx})">
+      <div class="dc-top">
+        <span class="dc-num">#${d.idx}</span>
+        <span class="dc-type" style="color:${TYPE_COLOR[d.duct_type]||'#555'}">${TYPE_LABEL[d.duct_type]||cap(d.duct_type)}</span>
+        <span class="pres-pill" style="background:${PRES_COLOR[d.pressure_class]||'#6B7280'}">${d.pressure_class}</span>
+      </div>
+      <div class="dc-bot">
+        ${d.dimension ? `<span>📐 ${d.dimension}</span>` : '<span style="opacity:.5">No section data</span>'}
+        <span>📏 ${d.length_ft} ft</span>
+      </div>
+    </div>`).join('');
+  $('count-badge').textContent = list.length;
+}
+
+function filterList(q) {
+  q = q.toLowerCase();
+  document.querySelectorAll('.duct-card').forEach(c => {
+    c.style.display = c.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+
+function updateHeader(data) {
+  const tc = {};
+  data.ducts.forEach(d => tc[d.duct_type] = (tc[d.duct_type]||0)+1);
+  const parts = Object.entries(tc).map(([t,n]) => `${n} ${cap(t)}`);
+  $('h-stats').textContent =
+    `${data.ducts.length} ducts · ${parts.join(' · ')} · Scale ${data.pt_per_ft} pt/ft`;
+}
+
+// ── Select ────────────────────────────────────────────────────────────────────
+function selectDuct(idx) {
+  if (selectedIdx) {
+    setGlow(selectedIdx, 0);
+    const prev = $(`dc-${selectedIdx}`);
+    if (prev) prev.classList.remove('selected');
+  }
+  selectedIdx = selectedIdx === idx ? null : idx;
+  if (selectedIdx) {
+    setGlow(selectedIdx, 0.8);
+    const card = $(`dc-${selectedIdx}`);
+    if (card) { card.classList.add('selected'); card.scrollIntoView({ behavior:'smooth', block:'nearest' }); }
+    const d = ducts.find(x => x.idx === selectedIdx);
+    if (d) panToCenter((d.p1[0]+d.p2[0])/2, (d.p1[1]+d.p2[1])/2);
+  }
+}
+
+function panToCenter(mx, my) {
+  const vw = viewport.clientWidth, vh = viewport.clientHeight;
+  panX = vw/2 - mx*zoom;
+  panY = vh/2 - my*zoom;
+  applyTransform();
+}
+
+// ── Zoom / Pan ────────────────────────────────────────────────────────────────
+viewport.addEventListener('wheel', e => {
+  e.preventDefault();
+  const f = e.deltaY < 0 ? 1.12 : 1/1.12;
+  const nz = Math.max(0.1, Math.min(10, zoom * f));
+  const r = viewport.getBoundingClientRect();
+  const mx = e.clientX - r.left, my = e.clientY - r.top;
+  panX = mx - (mx - panX)*(nz/zoom);
+  panY = my - (my - panY)*(nz/zoom);
+  zoom = nz;
+  applyTransform();
+}, { passive:false });
+
+viewport.addEventListener('mousedown', e => {
+  if (e.target.dataset.idx) return;
+  panning = true; px0 = e.clientX; py0 = e.clientY; pxS = panX; pyS = panY;
+});
+window.addEventListener('mousemove', e => {
+  if (!panning) return;
+  panX = pxS + e.clientX - px0;
+  panY = pyS + e.clientY - py0;
+  applyTransform();
+});
+window.addEventListener('mouseup', () => { panning = false; });
+
+function applyTransform() {
+  canvasWrap.style.transform = `translate(${panX}px,${panY}px) scale(${zoom})`;
+  $('zoom-label').textContent = Math.round(zoom*100) + '%';
+}
+
+function adjustZoom(f) {
+  const nz = Math.max(0.1, Math.min(10, zoom*f));
+  const vw = viewport.clientWidth, vh = viewport.clientHeight;
+  panX = vw/2 - (vw/2 - panX)*(nz/zoom);
+  panY = vh/2 - (vh/2 - panY)*(nz/zoom);
+  zoom = nz;
+  applyTransform();
+}
+
+function fitZoom() {
+  if (!planImg.naturalWidth) return;
+  const W = planImg.naturalWidth, H = planImg.naturalHeight;
+  const vw = viewport.clientWidth  || window.innerWidth - 610;
+  const vh = viewport.clientHeight || window.innerHeight - 90;
+  zoom = Math.min(vw/W, vh/H) * 0.94;
+  panX = (vw - W*zoom)/2;
+  panY = (vh - H*zoom)/2;
+  applyTransform();
+}
+
+// ── View manager ──────────────────────────────────────────────────────────────
+function showView(name) {
+  ['upload','analyzing','result'].forEach(n => {
+    const el = $(n + '-view');
+    el.style.display = n === name ? 'flex' : 'none';
+  });
+}
+
+showView('upload');
+
+// ── Reset ─────────────────────────────────────────────────────────────────────
+function resetApp() {
+  if (eventSource) { eventSource.close(); eventSource = null; }
+  selectedFile = null;
+  fileInput.value = '';
+  $('dz-text').textContent = 'Drop your PDF here';
+  analyzeBtn.disabled = true;
+  selectedIdx = null;
+  ducts = [];
+  sessionId = null;
+  pendingTools = {};
+  logEntryCount = 0;
+  overlay.innerHTML = '';
+  planImg.src = '';
+  $('duct-list').innerHTML = '';
+  $('search-input').value = '';
+  $('agent-log-a').innerHTML = '';
+  $('agent-log-r').innerHTML = '';
+  tooltip.style.display = 'none';
+  zoom = 1; panX = 0; panY = 0;
+  showView('upload');
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function showToast(msg) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  setTimeout(() => { t.style.display = 'none'; }, 4000);
+}
+
+function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''; }
+</script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+pymupdf>=1.27
+opencv-python>=4.13
+numpy
+anthropic
+Pillow
+reportlab
+structlog
+python-dotenv
+flask
